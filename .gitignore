@@ -1,0 +1,33 @@
+# Локальное окружение и секреты
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Зависимости и результаты сборки
+node_modules/
+dist/
+build/
+.next/
+coverage/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Файлы IDE и операционной системы
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Журналы и временные файлы
+*.log
+*.tmp
+*.swp
