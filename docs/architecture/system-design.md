@@ -15,11 +15,11 @@
 - `docs/product/requirements.md` — технические NFR;
 - `C:/Users/alex/Downloads/CODEX_ARCHITECTURE_SPEC.md` — архитектурный baseline с более низким приоритетом.
 
-Предложенные ADR-001—ADR-003 пока являются заглушками и не содержат принятых решений. Настоящий документ определяет согласованный набор решений для последующего оформления отдельных ADR, если эти решения потребуется менять независимо.
+Ключевые решения зафиксированы в принятых ADR из `docs/adr`: frontend, database, authentication, background processing, content moderation, disaster recovery, media/evidence и API compatibility. Настоящий документ остаётся сводным представлением системы; при изменении отдельного решения сначала актуализируется соответствующий ADR.
 
 ## 1. System context
 
-«Команда.МЭИ» — закрытый для гостей веб-сервис. Пользователи создают профили и резюме, ищут людей и объявления, откликаются, общаются, создают команды и события. Модераторы работают через административную область того же приложения. Снаружи система зависит только от сервиса транзакционной почты и провайдера автомодерации; интеграций с SSO МЭИ, календарями и рекламными рассылками в MVP нет.
+«Команда.МЭИ» — закрытый для гостей веб-сервис. Пользователи создают профили и резюме, ищут людей и объявления, откликаются, общаются, создают команды и события. Модераторы работают через административную область того же приложения. Снаружи система зависит от сервиса транзакционной почты и двух независимо эксплуатируемых endpoints автомодерации — основного и резервного. Интеграций с SSO МЭИ, календарями и рекламными рассылками в MVP нет.
 
 ```mermaid
 flowchart LR
@@ -27,19 +27,21 @@ flowchart LR
     moderator["Администратор-модератор"]
     system["Команда.МЭИ<br/>закрытый веб-сервис"]
     email["Провайдер<br/>транзакционной почты"]
-    moderation["Провайдер<br/>автомодерации"]
+    moderation1["Основной endpoint<br/>автомодерации"]
+    moderation2["Резервный endpoint<br/>автомодерации"]
 
     user -->|"HTTPS / WSS<br/>профили, поиск, отклики,<br/>команды, чаты, события"| system
     moderator -->|"HTTPS<br/>жалобы, проверки, апелляции"| system
     system -->|"HTTPS API<br/>сервисные письма"| email
-    system -->|"HTTPS API<br/>текст и безопасные ссылки на медиа"| moderation
+    system -->|"HTTPS API<br/>только публичный контент"| moderation1
+    system -.->|"failover<br/>только публичный контент"| moderation2
 ```
 
 ### Решение 1 — системная граница
 
 | Decision | Alternatives | Trade-offs | Reason |
 |---|---|---|---|
-| Единый продуктовый контур и минимальный набор внешних зависимостей | SSO МЭИ, внешние календари, несколько каналов уведомлений | Локальная регистрация и календарь требуют собственной реализации; зато внешние сбои не блокируют основные journeys | Прямо соответствует MVP и исключает интеграции, которых нет в требованиях |
+| Единый продуктовый контур; email и два одобренных endpoint автомодерации — единственные внешние runtime-зависимости | Один endpoint автомодерации; SSO МЭИ; внешние календари; несколько каналов уведомлений | Резервная автомодерация повышает стоимость интеграции и юридической проверки; зато отказ одного поставщика не останавливает публикацию | Публикация требует обязательной автомодерации, поэтому эта зависимость критичнее остальных интеграций |
 
 ## 2. Основные компоненты
 
@@ -54,8 +56,8 @@ Backend разделён на bounded contexts внутри одного про�
 | `Recruitment` | отклики, неизменяемые снимки резюме, решения и правила повторного отклика |
 | `Teams` | команды, единственный лидер, участники, заявки, приглашения, подписки, командный blacklist |
 | `Scheduling` | события команд и представление календаря подписчика |
-| `Messaging` | личные и командные conversations, messages, read state и скрытие чата |
-| `Trust` | автомодерация, ручные проверки, жалобы, решения, апелляции, личный blacklist и interaction policy |
+| `Messaging` | личные и командные conversations, current messages, immutable reported revisions до удаления, read state и скрытие чата |
+| `Trust` | автомодерация, ручные проверки, жалобы, `ReportEvidence` references/access grants, решения, апелляции, личный blacklist и interaction policy |
 | `Notifications` | внутренние уведомления и email deliveries |
 | `Files` | metadata, upload sessions, карантин, обработка, привязка и удаление объектов |
 | `Search` | денормализованная read model для поиска людей и объявлений и расчёт сортировок |
@@ -94,7 +96,7 @@ Backend реализуется на NestJS/TypeScript как два process entr
 
 Внутри модуля используется короткий поток `controller -> application service -> domain rules / Prisma`. Отдельные domain objects вводятся только для переходов состояний и сложных инвариантов; простой CRUD не оборачивается в искусственные слои. Zod является единственным основным механизмом runtime-валидации входных DTO. OpenAPI генерируется из публичных контрактов, а response DTO не являются Prisma-моделями.
 
-Синхронный вызов другого модуля допустим только через его публичный application/query contract. Когда межмодульный инвариант обязан быть строгим — например, одновременная блокировка пользователя и отправка ему отклика, заявки или сообщения — application orchestrator открывает одну PostgreSQL-транзакцию, берёт стабильный lock на пару субъектов и вызывает публичные команды модулей с общим transaction context; чужие repositories и SQL при этом не раскрываются. Побочные эффекты оформляются доменным событием в transactional outbox. Критическая операция не должна зависеть от доступности email, автомодерации или WebSocket.
+Синхронный вызов другого модуля допустим только через его публичный application/query contract. Когда межмодульный инвариант обязан быть строгим — например, одновременная блокировка пользователя и отправка ему отклика, заявки или сообщения — application orchestrator открывает одну PostgreSQL-транзакцию и блокирует нормализованный interaction key `(scope, min(subjectA, subjectB), max(subjectA, subjectB))`. При нескольких ключах они берутся в лексикографическом порядке. SQLSTATE `40P01` и `40001` повторяются не более двух раз с jitter под тем же `Idempotency-Key`; после исчерпания попыток клиент получает безопасный retryable conflict. Затем orchestrator вызывает публичные команды модулей с общим transaction context; чужие repositories и SQL при этом не раскрываются. Протокол проверяется конкурентными integration tests. Побочные эффекты оформляются доменным событием в transactional outbox. Критическая операция не должна зависеть от доступности email, автомодерации или WebSocket.
 
 ### Решение 4 — NestJS, REST и pragmatic layering
 
@@ -114,6 +116,8 @@ Backend реализуется на NestJS/TypeScript как два process entr
 - immutable JSONB snapshot резюме с версией схемы; JSONB не заменяет нормализованную предметную модель;
 - `pg_trgm`, PostgreSQL full-text search и GIN/B-tree indexes для `Search` read model;
 - ежедневные activity buckets и уникальные view/application facts вместо пересчёта сырых событий за 30 дней;
+- только инкрементальное обновление 30-дневных агрегатов; полный rebuild выполняется вручную вне пика и ограниченными batch;
+- отдельные connection pool limits для API и workers, bounded worker concurrency, `statement_timeout` и `lock_timeout` для фоновых запросов;
 - без шардирования и партиционирования до подтверждения измерениями.
 
 Минимальные юридические доказательства согласий и уничтожения хранятся без профиля и контента в отдельной PostgreSQL database с отдельными credentials и трёхлетним retention. Из основного приложения доступна только append/read-by-authorized-compliance операция; внешних FK нет.
@@ -134,12 +138,16 @@ MVP использует локальную email/password-аутентифик�
 - verification/reset tokens одноразовые, короткоживущие и хранятся только в виде хэша;
 - неподтверждённый и удаляемый аккаунты имеют явные server-side state guards.
 
+Socket.IO handshake принимает только allowlisted same-origin `Origin`, проверяет актуальную opaque session и состояние аккаунта. Каждая подписка на user/conversation room повторно проверяет object-level permission. Logout, revoke или переход аккаунта в ограниченное состояние разрывает активные sockets. Cross-origin handshake, подписка на чужую room и reconnect с отозванной session покрываются integration tests; Redis adapter используется только для fan-out, а не для авторизации.
+
 Авторизация сочетает:
 
-- RBAC для `user`/`moderator`/`administrator`;
+- RBAC для `user` и `moderator`; эскалация FR-159 задаётся отдельным permission `moderation.escalated_review`, а не глобальной ролью `administrator`;
 - формальную роль профиля `student`/`teacher`/`employer` как бизнес-атрибут, а не системное право;
 - resource ownership и relationship checks: author, team leader, conversation party, report assignee;
 - deny-by-default policy на application-service boundary и повторную фильтрацию результатов чтения.
+
+Минимальные moderation permissions: `reports.review`, `appeals.review`, `evidence.view`, `moderation.escalated_review`. Управление назначением этих прав отделено от просмотра evidence, а каждое использование `evidence.view` аудируется.
 
 ### Решение 6 — server-side opaque sessions вместо JWT/Keycloak
 
@@ -149,18 +157,20 @@ MVP использует локальную email/password-аутентифик�
 
 ## 7. External integrations
 
-Внешних интеграций две:
+Внешние runtime-интеграции:
 
 1. Транзакционная почта: verification, reset, отклики, сообщения, команды, события, модерация. Отправляется worker через HTTPS API; marketing email отсутствует.
-2. Автомодерация публичного текста и изображений. Worker передаёт минимально необходимый контент провайдеру, допущенному юридической и security-проверкой. Запрос содержит версию политики, а ответ нормализуется в стабильные violation codes из `appendix-prohibited-content.md`; решение, причина и версия политики доступны для аудита и обжалования. Неодобренная или спорная версия остаётся скрытой и направляется на ручную проверку; при недоступности провайдера — `pending`, а не автоматическое одобрение.
+2. Основной и резервный endpoints автомодерации публичного текста и изображений. Они должны принадлежать независимо отказоустойчивым контурам и оба пройти юридическую/security-проверку обработки данных в РФ. Worker передаёт только минимально необходимый публичный контент. Запрос содержит версию политики, а ответ нормализуется в стабильные violation codes из `appendix-prohibited-content.md`; решение, причина и версия политики доступны для аудита и обжалования.
 
-Интеграции имеют по одному узкому port (`EmailSender`, `ContentModerator`) и production/local adapter. Это оправданная граница нестабильности, а не общий abstraction framework. Выбор конкретного поставщика является deployment decision: до запуска должны быть подтверждены размещение/обработка данных в РФ, договорные условия, таймауты и удаление переданных данных.
+Интеграции имеют по одному узкому port (`EmailSender`, `ContentModerator`) и явные adapters. `ContentModerator` сначала использует основной endpoint; timeout, transport error или открытый circuit breaker переключают конкретную job на резервный. `ModerationRequest` хранит generation и active endpoint: только результат активной generation может атомарно завершить request, а запоздалый ответ предыдущего endpoint игнорируется и учитывается в telemetry. Повтор одного moderation request использует стабильный provider idempotency key. Если оба endpoints недоступны, версия остаётся `pending`, пользователь видит задержку, а автоматического или ручного одобрения не происходит: FR-132 требует завершённой автомодерации. `moderation_pending_age` предупреждает дежурного через 5 минут и открывает critical incident через 30 минут. Ручная очередь может приоритизировать и исследовать объект, но не заменяет обязательный автоматический gate.
+
+До production для обоих endpoints фиксируются SLA, connect/total timeouts, rate limits, правила удаления переданных данных и проверенный failover test. Это оправданная граница нестабильности, а не общий abstraction framework.
 
 ### Решение 7 — асинхронные provider adapters
 
 | Decision | Alternatives | Trade-offs | Reason |
 |---|---|---|---|
-| Вызывать email и moderation только из worker через узкие adapters | Вызов в request transaction; собственные SMTP/ML-системы | Пользователь позже видит результат, появляются retries и очередь; зато внешний сбой не повреждает бизнес-транзакцию и поставщик заменяем | NFR разрешают eventual consistency и задают отдельные сроки доставки/проверки |
+| Вызывать email и primary/secondary moderation только из worker через узкие adapters | Один moderation endpoint; вызов в request transaction; собственные SMTP/ML-системы | Второй endpoint увеличивает стоимость договора, тестирования и privacy review; зато отказ одного поставщика не останавливает обязательный publication gate | NFR разрешают eventual consistency, но автомодерация обязательна для каждой публичной версии |
 
 ## 8. Background processing
 
@@ -170,8 +180,9 @@ PostgreSQL outbox фиксируется в одной транзакции с �
 
 - `critical-domain` — создание контекстного чата и каскадные workflows;
 - `notifications` — внутренние уведомления и email;
-- `media` — проверка, удаление EXIF, resize, malware scan;
-- `moderation` — автоматическая проверка и ручные SLA/escalation;
+- `media-private` — техническая обработка вложений Messaging без маршрута к `ContentModerator`;
+- `media-public` — техническая обработка публичных изображений и выпуск события `PublicMediaTechnicallyReady`;
+- `moderation` — только публичный контент, primary/secondary failover и ручные SLA/escalation;
 - `search` — обновление read model и 30-дневных агрегатов;
 - `maintenance` — снятие неактивных объявлений, удаление аккаунтов/команд, retention и exports.
 
@@ -199,13 +210,22 @@ Redis используется для BullMQ, distributed rate limits и Socket.
 
 S3-совместимое managed storage в РФ хранит media, а PostgreSQL — metadata и связи. Объекты приватны, имена случайны и не содержат PII.
 
+Каждая upload session получает неизменяемый `contentScope: private_message | public_content` и owner reference. `Messaging` может создавать только `private_message`; публичные модули — только `public_content`. Runtime guard в `ContentModerator` отклоняет любой scope, кроме `public_content`, а dependency test запрещает импорт moderation adapter из `Messaging`.
+
 Upload — двухфазный:
 
 1. API создаёт короткоживущую upload session и presigned PUT в `quarantine`.
 2. После загрузки клиент завершает session; `media` worker проверяет размер, magic bytes/MIME, декодирование, malware, удаляет EXIF, уменьшает до Full HD/1 МБ и переносит результат в private `media`.
-3. Клиент получает `ready` через REST/Socket.IO и только затем может сослаться на attachment. Сообщение с фото создаётся одной транзакцией только для `ready` attachments, поэтому не считается отправленным до обязательной обработки.
+3. После sanitization объект получает `technically_ready` и переносится в private `media`. Приватное вложение на этом завершает обработку: клиент получает `ready`, а сообщение создаётся одной транзакцией только для готовых attachments.
+4. Публичное изображение переходит в `moderation_pending`. Провайдер получает short-lived scoped GET URL только на один sanitized object, без bucket credentials и list/write permissions. После `approved` версия может быть опубликована; при `rejected` или `moderation_failed` она остаётся скрытой.
+
+Полный state machine публичного изображения: `uploaded -> quarantined -> sanitized -> technically_ready -> moderation_pending -> approved | rejected | moderation_failed -> attached_to_published_version`. Провайдер никогда не получает объект прямо из quarantine. Невозможность скачать объект считается ошибкой moderation job, а не одобрением.
 
 Выдача выполняется короткоживущим signed GET только после проверки прав API. Для аватаров, объявлений и событий возможно CDN/proxy позже, но источник остаётся private.
+
+При создании жалобы `Messaging` атомарно фиксирует immutable revision текущего текста только для оспариваемого сообщения; обычные редактирования без жалобы не создают историю. `Trust` хранит `ReportEvidence` как ссылку на этот `messageRevisionId` и соответствующие `attachmentId`, а не копию текста или media в audit. Модератор с `evidence.view` получает содержимое только из экрана конкретной открытой жалобы; API повторно проверяет назначение жалобы и выдаёт одноразовый short-lived URL для attachment. Audit содержит только actor, report, evidence IDs, время и результат доступа. Если исходное сообщение физически удалено, его reported revisions/attachments также удаляются, evidence помечается `unavailable`, а решение принимается по оставшимся metadata; восстанавливать содержимое из backup для модерации запрещено.
+
+Отдельный snapshot evidence после удаления сообщения в MVP не создаётся: это конфликтовало бы с FR-124 без явного основания и retention. Если product/legal review потребует сохранять такой snapshot, сначала изменяются продуктовая спецификация, политика обработки и сроки удаления, затем ADR-007.
 
 Удаление объекта оформляется tombstone и idempotent job. Для 501-й фотографии чата транзакция резервирует новое вложение и помечает самые старые attachments отправителя на удаление только после успешной обработки нового. Quarantine имеет lifecycle не более 24 часов. Backup retention основного контура — не более 21 дня, чтобы данные, существовавшие до необратимого удаления на 7-й день, гарантированно исчезли до 30-го дня от исходного запроса.
 
@@ -220,13 +240,15 @@ Upload — двухфазный:
 | Связь | Протокол и контракт |
 |---|---|
 | Browser ↔ web/API | HTTPS, same origin; REST JSON `/api/v1`; OpenAPI; ISO 8601; UTF-8 |
-| Realtime | Socket.IO поверх WSS; только hints/events с `eventId`, без статуса source-of-truth |
+| Realtime | Socket.IO поверх WSS; same-origin handshake, opaque session auth, room-level authorization; только hints/events с `eventId`, без статуса source-of-truth |
 | Upload/download | HTTPS presigned S3 URL; private objects |
 | API/worker ↔ PostgreSQL | PostgreSQL wire protocol с TLS внутри private network |
 | API/worker ↔ Redis | RESP с TLS/auth внутри private network |
 | Worker ↔ providers | HTTPS API с connect/read timeout и request correlation ID |
 
 Ошибки REST имеют стабильные machine-readable `code`, русское `message`, `requestId`, допустимые `details` и подходящий HTTP status. Большие списки используют cursor pagination. gRPC, GraphQL и публичные webhooks не вводятся.
+
+Внутри `/api/v1` изменения additive-only: существующие поля не удаляются, не переименовываются и не становятся более строгими в том же rolling-deploy window. Удаление проходит через deprecation и новую major API version. CI сравнивает OpenAPI с последней выпущенной спецификацией, блокирует breaking changes и компилирует generated client; contract tests проверяют совместимость старого клиента с новым API и нового клиента со старым API.
 
 ### Решение 11 — REST + WSS hints
 
@@ -241,12 +263,12 @@ Upload — двухфазный:
 - ошибка до commit откатывает транзакцию и не показывает успех;
 - ошибка после commit не отменяет предметное действие: outbox повторяет side effect;
 - email: bounded retries с exponential backoff/jitter, затем dead-letter и alert;
-- автомодерация: версия остаётся `pending`/скрытой, последняя одобренная версия продолжает показываться;
+- автомодерация: timeout/transport failure основного endpoint переключает job на резервный; при отказе обоих версия остаётся `pending`/скрытой, последняя одобренная версия продолжает показываться, срабатывают age-based alerts и пользователь видит задержку;
 - media: attachment получает `failed`, объект карантина удаляется, сообщение с ним не создаётся;
 - Redis: подтверждённые изменения и outbox сохраняются в PostgreSQL, доставка возобновляется после восстановления; auth endpoints fail closed, если недоступен распределённый rate limit;
 - S3: новые media uploads недоступны, текстовые операции продолжаются; недоступный объект не заменяется «успешным» вложением;
 - PostgreSQL: readiness снимает instance с балансировщика, изменяющие операции fail closed;
-- Socket.IO: клиент показывает reconnect state и восстанавливает данные через REST;
+- Socket.IO: невалидный Origin/session или запрещённая room отклоняются; при разрыве клиент показывает reconnect state и восстанавливает данные через REST;
 - background jobs имеют max attempts, dead-letter state, причину, метрики и безопасный manual replay.
 
 Для каскадного удаления команды/аккаунта используется restartable workflow с checkpoint на шаге, а не одна долгая транзакция. Сначала объект скрывается и блокируются изменения, затем создаются уведомления, после чего очищаются зависимости и media. Каждый шаг идемпотентен.
@@ -302,8 +324,11 @@ Upload — двухфазный:
 2. вертикально масштабировать PostgreSQL и настроить pool limits;
 3. независимо увеличить API/worker replicas и concurrency очередей;
 4. добавить кэш конкретного доказанного hot read;
-5. только затем рассматривать read replica, partitioning messages/audit/outbox или отдельный search engine;
-6. выделять модуль в сервис только при независимом профиле нагрузки/команде и измеряемом операционном выигрыше.
+5. рассматривать read replica, если после query/index tuning DB CPU или read latency превышают 70% согласованного capacity budget в течение 15 минут либо p95 чтения нарушается в двух последовательных load tests;
+6. только затем рассматривать partitioning messages/audit/outbox или отдельный search engine;
+7. выделять модуль в сервис только при независимом профиле нагрузки/команде и измеряемом операционном выигрыше.
+
+До первого production-запуска обязателен mixed load/soak test профиля TNFR-001/002: 30 RPS, из них 5 write RPS, 200 Socket.IO connections, поиск, сообщения, media processing и background queues. Тот же тест повторяется перед изменениями хранения/индексов. Проходными являются TNFR p50/p95/p99, отсутствие неограниченного роста outbox/queues и запас не менее 30% по DB CPU/connections и worker capacity.
 
 ### Решение 15 — scale the monolith first
 
@@ -324,6 +349,8 @@ Internet
 - Только reverse proxy имеет публичный inbound; PostgreSQL, Redis, worker и S3 buckets недоступны из Internet.
 - API — единственная граница доступа к бизнес-данным и signed URLs. Worker использует отдельную service identity с минимальными правами на очереди/buckets.
 - Moderator UI не является доверенной зоной: каждое действие авторизуется server-side и пишется в audit.
+- Приватные messages и attachments не имеют пути к `ContentModerator`: их `contentScope` проверяется при создании job и повторно в provider adapter. Только публичный sanitized object может получить provider-scoped URL.
+- Доступ к evidence разрешён только назначенному модератору из контекста открытой жалобы и permission `evidence.view`; содержимое не копируется в audit/logs/traces, а каждый просмотр фиксируется только metadata.
 - Secrets находятся в secret store/CI protected variables, регулярно ротируются и не попадают в image/logs.
 - TLS везде, encryption at rest у managed PostgreSQL/Redis/S3/backups, security headers, CSP, dependency/container scanning.
 - Logs/traces не содержат пароли, tokens, message text, media, email или полный resume; user IDs псевдонимизируются для telemetry.
@@ -345,7 +372,8 @@ Internet
 - RPS, error ratio, availability и p50/p95/p99 по классу endpoint;
 - DB pool saturation, slow queries, locks, storage и backup age/result;
 - queue depth/oldest age/retry/DLQ, outbox lag и worker duration;
-- media p95, moderation backlog/deadline risk, notification/email delivery p95;
+- media p95, moderation backlog/deadline risk, primary/secondary provider availability, circuit-breaker state и `moderation_pending_age`;
+- PostgreSQL wait events, lock/deadlock rate, statement timeouts и раздельная saturation API/worker pools;
 - S3 usage и число chat photos на пользователя;
 - deletion/export workflow age и приближение 30-дневного срока;
 - alert на критический сбой не позднее 15 минут.
@@ -360,13 +388,13 @@ Readiness проверяет необходимые зависимости дл�
 
 ## 18. Deployment architecture
 
-Production размещается у провайдера в РФ без Kubernetes. Docker images версионируются immutable digest. Reverse proxy/load balancer завершает TLS и направляет `/` в Next.js, `/api` в NestJS и `/socket.io` в realtime gateway. Web/API/worker могут использовать один release, но запускаются отдельными process roles.
+Production размещается у провайдера в РФ без Kubernetes. Docker images версионируются immutable digest. Reverse proxy/load balancer завершает TLS и направляет `/` в Next.js, `/api` в NestJS и `/socket.io` в realtime gateway. Web/API/worker могут использовать один release, но запускаются отдельными process roles. Вторая площадка в РФ является cold DR target: production-трафик в штатном режиме не принимает, но имеет проверенные IaC, доступ к отдельному backup failure domain, зарезервированные quotas и runbook восстановления.
 
 ```mermaid
 flowchart TB
     internet["Пользователи / модераторы"]
 
-    subgraph rf["Production region, РФ"]
+    subgraph rf["Primary production site, РФ"]
         edge["Managed LB / reverse proxy<br/>TLS, rate limits, security headers"]
 
         subgraph apps["Private application network"]
@@ -387,13 +415,18 @@ flowchart TB
             legal[("Legal evidence DB<br/>separate credentials")]
             redis[("Managed Redis<br/>BullMQ, rate limit, Socket.IO")]
             s3[("Private S3 storage<br/>quarantine, media")]
-            backup[("Separate backup storage<br/>encrypted, retention 21 days")]
             obs["Managed observability<br/>logs, metrics, traces, alerts"]
         end
     end
 
+    subgraph recovery["Separate recovery failure domain, РФ"]
+        backup[("Encrypted backup storage<br/>user retention 21 days")]
+        dr["Cold DR target<br/>IaC + reserved quotas"]
+    end
+
     email["Email provider"]
-    moderation["Moderation provider"]
+    moderation1["Primary moderation endpoint"]
+    moderation2["Secondary moderation endpoint"]
     ci["CI/CD<br/>test, scan, migrate, rollout"]
 
     internet -->|"HTTPS / WSS"| edge
@@ -417,10 +450,13 @@ flowchart TB
     worker2 --> s3
     pg -.-> backup
     s3 -.-> backup
+    backup -.->|"restore ≤ 8 h"| dr
     worker1 -->|"HTTPS"| email
-    worker1 -->|"HTTPS"| moderation
+    worker1 -->|"HTTPS"| moderation1
+    worker1 -.->|"failover"| moderation2
     worker2 -->|"HTTPS"| email
-    worker2 -->|"HTTPS"| moderation
+    worker2 -->|"HTTPS"| moderation1
+    worker2 -.->|"failover"| moderation2
     web1 -.-> obs
     api1 -.-> obs
     api2 -.-> obs
@@ -432,13 +468,13 @@ flowchart TB
 
 CI/CD выполняет lint, unit/integration/API/E2E tests, dependency/image scan, build, миграции и rolling deploy. Миграции следуют expand/migrate/contract; destructive contract выполняется отдельным поздним release. Перед rollout проверяется backup и совместимость rollback. При дефекте трафик возвращается на предыдущий image не более чем за 30 минут без отката уже применённых данных.
 
-Ежедневные encrypted backups PostgreSQL и object inventory/copy хранятся отдельно в РФ не более 21 дня; RPO ≤24 ч, RTO ≤8 ч. Restore rehearsal проводится ежеквартально. Наличие двух app replicas устраняет planned downtime приложения, но не заявляет active-active между площадками.
+Ежедневные encrypted backups PostgreSQL, legal evidence DB и object inventory/copy хранятся в отдельном failure domain в РФ не более 21 дня для пользовательского контура; legal evidence использует свой обоснованный retention. Обычный отказ instance/host закрывается managed failover с внутренней целью ≤15 минут и не использует DR restore. Потеря основной площадки или невосстановимая порча данных закрывается cold DR: RPO ≤24 ч, RTO ≤8 ч. Restore rehearsal проводится ежеквартально именно в DR target и включает приложение, secrets rotation, PostgreSQL, legal evidence DB, media, Redis/BullMQ recovery и проверку DNS/TLS. Наличие DR target не означает active-active между площадками.
 
 ### Решение 18 — Docker и managed stateful services без Kubernetes
 
 | Decision | Alternatives | Trade-offs | Reason |
 |---|---|---|---|
-| Rolling Docker deployment в двух failure domains, managed PostgreSQL/Redis/S3 в РФ | Kubernetes; один VPS со всем стеком; multi-region active-active | Выше инфраструктурная стоимость и зависимость от managed provider; orchestration проще и менее автоматизировано, чем Kubernetes. Зато локальный failover поддерживает 99,5%, а backups — требуемые RPO/RTO без отдельной platform team | Минимальная эксплуатационная сложность для заданного масштаба и требований размещения |
+| Rolling Docker deployment в двух local failure domains плюс cold DR target в РФ; managed PostgreSQL/Redis/S3 | Kubernetes; один VPS со всем стеком; multi-region active-active | Cold DR требует регулярных restore exercises и зарезервированных quotas, но дешевле постоянно активной второй площадки. Local failover поддерживает 99,5%, а cold DR — требуемые RPO/RTO | Минимальная эксплуатационная сложность, при которой отказ основной площадки действительно восстанавливаем |
 
 ## 19. Container diagram
 
@@ -467,7 +503,8 @@ flowchart LR
     end
 
     email["Email API"]
-    moderation["Moderation API"]
+    moderation1["Primary moderation API"]
+    moderation2["Secondary moderation API"]
 
     browser -->|"HTTPS"| web
     browser -->|"REST / WSS"| api
@@ -492,7 +529,8 @@ flowchart LR
     pg -.-> backup
     s3 -.-> backup
     worker --> email
-    worker --> moderation
+    worker --> moderation1
+    worker -.-> moderation2
 ```
 
 ## 20. Major request flow: принятие отклика
@@ -554,13 +592,19 @@ sequenceDiagram
 | FR-012—043 | Нормализованные Profiles/Opportunities, Search projection на PostgreSQL, дневные/30-дневные агрегаты |
 | FR-044—084 | Версии контента, moderation gate, immutable resume snapshot, ACID state transitions, context-chat outbox |
 | FR-085—114 | Teams/Scheduling ownership, unique membership constraints, transactional transitions, notification events |
-| FR-115—130; NFR-009/016/020 | Messaging, REST + WSS, двухфазный media workflow, sender quota и private S3 |
-| FR-131—142, 156—159; NFR-024 | Moderation queue, deadline fields, priority escalation, audit |
+| FR-115—130; NFR-005/009/016/020 | Messaging, authenticated same-origin WSS, private media scope без пути к moderation provider, sender quota и private S3 |
+| FR-131—142, 156—159; NFR-024 | Primary/secondary automated gate, moderation queue, `ReportEvidence` reference access, deadline fields, priority escalation и audit metadata |
 | FR-143—151, 160; TNFR-008/010/011 | Immediate hide, restartable deletion workflow, ≤21-day backups, isolated legal evidence |
-| TNFR-001—005, 012—014 | Stateless replicas, indexed PostgreSQL, observability, rolling Docker deployment, responsive web |
-| TNFR-006—007, 013 | ACID + outbox/inbox, daily backups, restore drills, expand/migrate/contract и rollback |
+| TNFR-001—005, 012—014 | Stateless replicas, indexed PostgreSQL, mixed load/soak gate, observability, rolling Docker deployment, responsive web |
+| TNFR-006—007, 013 | ACID + outbox/inbox, canonical interaction locks, daily backups, cold-DR drills, API compatibility gate, expand/migrate/contract и rollback |
 
-## 22. Явно отложенные решения
+## 22. Обязательное продуктовое решение до расширения evidence retention
+
+Текущая архитектура позволяет модератору просмотреть оспариваемое сообщение только пока исходный объект существует. После физического удаления чата evidence становится `unavailable`; backup не используется как moderation storage. Сохранение отдельного snapshot после удаления может улучшить рассмотрение жалобы, но меняет обещание физического удаления FR-124 и обработку персональных данных.
+
+До реализации snapshot product owner и профильный юрист должны определить основание, точный срок, доступ, поведение при удалении аккаунта/чата и текст пользовательской политики. Решение оформляется изменением `product-spec.md` и ADR-007. До этого отдельные копии текста сообщений и media запрещены.
+
+## 23. Явно отложенные решения
 
 До появления измеряемой потребности не вводятся:
 
