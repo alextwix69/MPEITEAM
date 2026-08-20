@@ -1,0 +1,2631 @@
+openapi: 3.1.0
+info:
+  title: Команда.МЭИ Frontend API
+  version: 1.0.0
+  summary: REST-контракт MVP между web frontend и backend
+  description: |
+    Source-of-truth для browser REST API. Общие правила authorization, retries,
+    idempotency, optimistic concurrency и кодов ошибок описаны также в
+    docs/architecture/api-contracts.md. Внутренние worker/provider API не входят.
+  license:
+    name: Proprietary
+servers:
+  - url: /api/v1
+    description: Same-origin reverse proxy
+tags:
+  - { name: Identity }
+  - { name: Profiles }
+  - { name: Catalog }
+  - { name: Search }
+  - { name: Files }
+  - { name: Opportunities }
+  - { name: Recruitment }
+  - { name: Teams }
+  - { name: Scheduling }
+  - { name: Messaging }
+  - { name: Notifications }
+  - { name: Trust }
+  - { name: Moderation }
+  - { name: Compliance }
+security:
+  - CookieSession: []
+paths:
+  /auth/csrf:
+    get:
+      tags: [Identity]
+      operationId: getCsrfToken
+      summary: Получить CSRF token текущей сессии
+      x-authorization: Любая незавершённая session.
+      responses:
+        '200':
+          description: CSRF token; Cache-Control no-store.
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/CsrfToken' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /auth/registrations:
+    post:
+      tags: [Identity]
+      operationId: registerAccount
+      summary: Зарегистрировать аккаунт
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      x-authorization: Public; rate limit по IP и normalized email.
+      x-business-errors: [EMAIL_ALREADY_REGISTERED, EMAIL_DOMAIN_NOT_ALLOWED, AGE_CONFIRMATION_REQUIRED, CONSENT_REQUIRED, CONSENT_VERSION_OUTDATED]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/RegistrationRequest' } }
+      responses:
+        '201':
+          description: Аккаунт создан в unverified, письмо поставлено в очередь.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/RegistrationResult' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /auth/email-verifications:
+    post:
+      tags: [Identity]
+      operationId: verifyEmail
+      summary: Подтвердить email одноразовым token
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      x-business-errors: [TOKEN_INVALID_OR_EXPIRED, CONSENT_EVIDENCE_UNAVAILABLE]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/TokenRequest' } }
+      responses:
+        '200':
+          description: Email подтверждён, session создана/обновлена.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/SessionView' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /auth/email-verifications/resend:
+    post:
+      tags: [Identity]
+      operationId: resendEmailVerification
+      summary: Повторно запросить письмо подтверждения
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      x-authorization: Public generic flow либо unverified session; результат не раскрывает наличие email.
+      x-business-errors: [ALREADY_VERIFIED]
+      requestBody:
+        required: false
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/EmailRequest' } }
+      responses:
+        '202': { $ref: '#/components/responses/OperationAccepted' }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /auth/sessions:
+    post:
+      tags: [Identity]
+      operationId: createSession
+      summary: Войти по email и password
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/OptionalIdempotencyKey' }
+      x-business-errors: [INVALID_CREDENTIALS, ACCOUNT_DELETED]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/LoginRequest' } }
+      responses:
+        '200':
+          description: Session cookie установлена; ответ не кешируется.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/SessionView' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /auth/session:
+    delete:
+      tags: [Identity]
+      operationId: deleteCurrentSession
+      summary: Завершить текущую сессию
+      parameters:
+        - { $ref: '#/components/parameters/CsrfToken' }
+      x-authorization: Current session, включая deleting account.
+      x-idempotency: HTTP DELETE; повтор возвращает 204.
+      responses:
+        '204': { description: Session отозвана. }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /auth/password-resets:
+    post:
+      tags: [Identity]
+      operationId: requestPasswordReset
+      summary: Запросить восстановление доступа
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/EmailRequest' } }
+      responses:
+        '202': { $ref: '#/components/responses/OperationAccepted' }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /auth/password-resets/confirm:
+    post:
+      tags: [Identity]
+      operationId: confirmPasswordReset
+      summary: Установить password по подтверждённому reset token
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      x-business-errors: [TOKEN_INVALID_OR_EXPIRED, PASSWORD_REUSED]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/PasswordResetConfirm' } }
+      responses:
+        '204': { description: 'Password изменён, прежние sessions отозваны.' }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /me:
+    get:
+      tags: [Identity]
+      operationId: getCurrentAccount
+      summary: Получить current account и capability flags
+      x-authorization: Current session, включая unverified/deleting.
+      responses:
+        '200':
+          description: Current account.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/CurrentAccount' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /me/profile:
+    get:
+      tags: [Profiles]
+      operationId: getOwnProfile
+      summary: Получить свой profile, включая draft/pending state
+      responses:
+        '200':
+          description: Own profile.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Profile' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    patch:
+      tags: [Profiles]
+      operationId: updateOwnProfile
+      summary: Создать новую moderated version своего profile
+      parameters:
+        - { $ref: '#/components/parameters/CsrfToken' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      x-authorization: Active account; profile owner.
+      x-business-errors: [CONTENT_EDIT_LOCKED, MEDIA_NOT_READY, ROLE_FIELDS_INVALID]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/ProfileInput' } }
+      responses:
+        '202':
+          description: Version сохранена и поставлена на moderation.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Profile' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /profiles/{accountId}:
+    parameters:
+      - { $ref: '#/components/parameters/AccountId' }
+    get:
+      tags: [Profiles]
+      operationId: getPublicProfile
+      summary: Получить approved public profile и visible resumes
+      x-authorization: Active account; target profile visible. Email не выдаётся.
+      responses:
+        '200':
+          description: Public profile.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/PublicProfile' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /me/resumes:
+    get:
+      tags: [Profiles]
+      operationId: listOwnResumes
+      summary: Получить все свои resumes в slot order
+      responses:
+        '200':
+          description: Не более шести resumes.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/ResumeList' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    post:
+      tags: [Profiles]
+      operationId: createAdditionalResume
+      summary: Создать additional resume
+      parameters:
+        - { $ref: '#/components/parameters/CsrfToken' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      x-authorization: Active account; owner.
+      x-business-errors: [RESUME_LIMIT_REACHED, TAG_NOT_FOUND, MEDIA_NOT_READY]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/ResumeInput' } }
+      responses:
+        '202':
+          description: Additional resume создано и ожидает moderation.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Resume' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /me/resumes/{resumeId}:
+    parameters:
+      - { $ref: '#/components/parameters/ResumeId' }
+    get:
+      tags: [Profiles]
+      operationId: getOwnResume
+      summary: Получить своё resume
+      responses:
+        '200':
+          description: Resume including owner-only state.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Resume' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    patch:
+      tags: [Profiles]
+      operationId: updateOwnResume
+      summary: Создать новую moderated resume version
+      parameters:
+        - { $ref: '#/components/parameters/CsrfToken' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      x-business-errors: [PRIMARY_RESUME_MUST_BE_VISIBLE, CONTENT_EDIT_LOCKED, TAG_NOT_FOUND, MEDIA_NOT_READY]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/ResumeInput' } }
+      responses:
+        '202':
+          description: Resume version принята на moderation.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Resume' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    delete:
+      tags: [Profiles]
+      operationId: deleteAdditionalResume
+      summary: Удалить additional resume
+      parameters:
+        - { $ref: '#/components/parameters/CsrfToken' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      x-business-errors: [PRIMARY_RESUME_CANNOT_BE_DELETED]
+      responses:
+        '204': { description: Resume удалено; application snapshots не изменены. }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /catalog/tags:
+    get:
+      tags: [Catalog]
+      operationId: listTags
+      summary: Получить active product tag catalog
+      parameters:
+        - name: category
+          in: query
+          schema: { type: string, maxLength: 120 }
+        - { $ref: '#/components/parameters/IfNoneMatch' }
+      x-pagination: Bounded catalog of exactly 180 active tags; no cursor.
+      x-sorting: sortOrder ascending.
+      responses:
+        '200':
+          description: Active tag catalog.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/TagCatalog' } }
+        '304': { description: Catalog не изменился. }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /search/people:
+    get:
+      tags: [Search]
+      operationId: searchPeople
+      summary: Искать людей по ФИО и approved profile/resume projection
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { name: q, in: query, schema: { type: string, maxLength: 200 } }
+        - { name: tagId, in: query, schema: { type: array, maxItems: 20, items: { $ref: '#/components/schemas/Uuid' } }, explode: true }
+        - { name: tagMode, in: query, schema: { type: string, enum: [any, all], default: any } }
+        - { name: role, in: query, schema: { $ref: '#/components/schemas/FormalRole' } }
+        - { name: institute, in: query, schema: { type: string, maxLength: 200 } }
+        - { name: department, in: query, schema: { type: string, maxLength: 200 } }
+        - { name: sort, in: query, schema: { type: string, enum: [activity_desc, activity_asc], default: activity_desc } }
+      x-business-errors: [TAG_NOT_FOUND]
+      x-sorting: Activity value is hidden; ties use lastActionAt, accountCreatedAt and accountId.
+      responses:
+        '200':
+          description: Search page; empty result is items [].
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/PeopleSearchPage' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /search/opportunities:
+    get:
+      tags: [Search]
+      operationId: searchOpportunities
+      summary: Искать published opportunities по title и filters
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { name: q, in: query, schema: { type: string, maxLength: 200 } }
+        - { name: tagId, in: query, schema: { type: array, maxItems: 10, items: { $ref: '#/components/schemas/Uuid' } }, explode: true }
+        - { name: tagMode, in: query, schema: { type: string, enum: [any, all], default: any } }
+        - { name: authorKind, in: query, schema: { $ref: '#/components/schemas/AuthorKind' } }
+        - { name: authorRole, in: query, schema: { $ref: '#/components/schemas/FormalRole' } }
+        - { name: institute, in: query, schema: { type: string, maxLength: 200 } }
+        - { name: department, in: query, schema: { type: string, maxLength: 200 } }
+        - { name: sort, in: query, schema: { type: string, enum: [popularity_desc, popularity_asc, newest], default: popularity_desc } }
+      x-business-errors: [FILTER_NOT_APPLICABLE, TAG_NOT_FOUND]
+      x-sorting: Popularity value is hidden; ties use publishedAt and opportunityId.
+      responses:
+        '200':
+          description: Search page; empty result is items [].
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/OpportunitySearchPage' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /uploads:
+    post:
+      tags: [Files]
+      operationId: createUploadSession
+      summary: Создать direct upload session
+      parameters:
+        - { $ref: '#/components/parameters/CsrfToken' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      x-business-errors: [UPLOAD_SCOPE_MISMATCH, UPLOAD_LIMIT_EXCEEDED, OWNER_NOT_FOUND]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/UploadCreate' } }
+      responses:
+        '201':
+          description: Short-lived, object-scoped presigned PUT.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/UploadSession' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /uploads/{uploadId}:
+    parameters:
+      - { $ref: '#/components/parameters/UploadId' }
+    get:
+      tags: [Files]
+      operationId: getUploadSession
+      summary: Получить состояние обработки upload
+      x-authorization: Uploader only.
+      responses:
+        '200':
+          description: Upload state.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/UploadSession' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /uploads/{uploadId}/complete:
+    parameters:
+      - { $ref: '#/components/parameters/UploadId' }
+    post:
+      tags: [Files]
+      operationId: completeUpload
+      summary: Завершить direct upload и запустить sanitization
+      parameters:
+        - { $ref: '#/components/parameters/CsrfToken' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      x-authorization: Uploader only.
+      x-business-errors: [UPLOAD_NOT_FOUND, UPLOAD_EXPIRED, UPLOAD_OBJECT_MISMATCH]
+      responses:
+        '202':
+          description: Processing начат или ранее начат.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/UploadSession' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /media/{mediaId}/download-url:
+    parameters:
+      - { $ref: '#/components/parameters/MediaId' }
+    get:
+      tags: [Files]
+      operationId: createMediaDownloadUrl
+      summary: Получить short-lived signed GET после object authorization
+      x-business-errors: [MEDIA_NOT_READY, MEDIA_NO_LONGER_STORED]
+      responses:
+        '200':
+          description: URL не кешируется и действует не более пяти минут.
+          headers: { Cache-Control: { schema: { type: string, const: no-store } } }
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/DownloadUrl' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /opportunities:
+    post:
+      tags: [Opportunities]
+      operationId: createOpportunity
+      summary: Создать personal/team opportunity и отправить на moderation
+      parameters:
+        - { $ref: '#/components/parameters/CsrfToken' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      x-authorization: Personal author self; team author only current leader.
+      x-business-errors: [NOT_TEAM_LEADER, CUSTOM_TYPE_REQUIRED, MEDIA_NOT_READY, TAG_NOT_FOUND]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/OpportunityInput' } }
+      responses:
+        '202':
+          description: Opportunity сохранено в pending moderation.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Opportunity' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /opportunities/{opportunityId}:
+    parameters:
+      - { $ref: '#/components/parameters/OpportunityId' }
+    get:
+      tags: [Opportunities]
+      operationId: getOpportunity
+      summary: Получить opportunity
+      x-authorization: Published viewer or owning author/team leader for own non-public state.
+      x-side-effects: Idempotent unique daily view fact; owners/team members excluded.
+      responses:
+        '200':
+          description: Opportunity; absolute popularity is never returned.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Opportunity' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    patch:
+      tags: [Opportunities]
+      operationId: updateOpportunity
+      summary: Создать новую moderated opportunity version
+      parameters:
+        - { $ref: '#/components/parameters/CsrfToken' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      x-authorization: Personal author or current team leader.
+      x-business-errors: [CONTENT_EDIT_LOCKED, OPPORTUNITY_DELETING, MEDIA_NOT_READY, TAG_NOT_FOUND]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/OpportunityInput' } }
+      responses:
+        '202':
+          description: New version pending; last approved remains public.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Opportunity' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    delete:
+      tags: [Opportunities]
+      operationId: deleteOpportunity
+      summary: Скрыть и запустить restartable deletion opportunity
+      parameters:
+        - { $ref: '#/components/parameters/CsrfToken' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      x-authorization: Personal author or current team leader.
+      x-business-errors: [DELETION_ALREADY_IRREVERSIBLE]
+      responses:
+        '202':
+          description: Deletion workflow accepted.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/DeletionStatus' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /me/opportunities:
+    get:
+      tags: [Opportunities]
+      operationId: listOwnOpportunities
+      summary: Получить personal и led-team opportunities для управления
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { name: authorKind, in: query, schema: { $ref: '#/components/schemas/AuthorKind' } }
+        - { name: state, in: query, schema: { $ref: '#/components/schemas/OpportunityState' } }
+      x-sorting: createdAt descending, opportunityId descending.
+      responses:
+        '200':
+          description: Management page.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/OpportunityPage' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /opportunities/{opportunityId}/deactivation:
+    parameters:
+      - { $ref: '#/components/parameters/OpportunityId' }
+    post:
+      tags: [Opportunities]
+      operationId: deactivateOpportunity
+      summary: Снять opportunity с публикации
+      parameters:
+        - { $ref: '#/components/parameters/CsrfToken' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      x-business-errors: [STATE_CONFLICT]
+      responses:
+        '200':
+          description: Opportunity inactive.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Opportunity' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /opportunities/{opportunityId}/applications:
+    parameters:
+      - { $ref: '#/components/parameters/OpportunityId' }
+    post:
+      tags: [Recruitment]
+      operationId: createApplication
+      summary: Создать или атомарно заменить eligible application
+      parameters:
+        - { $ref: '#/components/parameters/CsrfToken' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      x-authorization: Active candidate; not owner or team member; interaction allowed.
+      x-business-errors: [OWN_OPPORTUNITY, TEAM_MEMBER_CANNOT_APPLY, INTERACTION_BLOCKED, APPLICATION_COOLDOWN, APPLICATION_ALREADY_ACCEPTED]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/ApplicationCreate' } }
+      responses:
+        '201':
+          description: Pending application and immutable resume snapshot committed.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Application' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    get:
+      tags: [Recruitment]
+      operationId: listOpportunityApplications
+      summary: Получить current pending applications для рассмотрения
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { name: sort, in: query, schema: { type: string, enum: [created_asc, created_desc], default: created_asc } }
+      x-authorization: Personal author or current team leader.
+      x-filtering: Pending only; permanent terminal history is not exposed.
+      responses:
+        '200':
+          description: Pending application page.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/ApplicationPage' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /applications/{applicationId}:
+    parameters:
+      - { $ref: '#/components/parameters/ApplicationId' }
+    get:
+      tags: [Recruitment]
+      operationId: getApplication
+      summary: Получить текущий application record
+      x-authorization: Candidate or recipient side. Old terminal records may already be absent.
+      responses:
+        '200':
+          description: Current application.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Application' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /applications/{applicationId}/decision:
+    parameters:
+      - { $ref: '#/components/parameters/ApplicationId' }
+    post:
+      tags: [Recruitment]
+      operationId: decideApplication
+      summary: Необратимо принять или отклонить pending application
+      parameters:
+        - { $ref: '#/components/parameters/CsrfToken' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      x-authorization: Personal author or current team leader.
+      x-business-errors: [APPLICATION_ALREADY_DECIDED, INTERACTION_BLOCKED, STATE_CONFLICT]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/ApplicationDecision' } }
+      responses:
+        '200':
+          description: Decision committed; chat creation state is explicit and eventual.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Application' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /applications/{applicationId}/conversation-retry:
+    parameters:
+      - { $ref: '#/components/parameters/ApplicationId' }
+    post:
+      tags: [Recruitment]
+      operationId: retryApplicationConversation
+      summary: Безопасно повторить создание context conversation
+      parameters:
+        - { $ref: '#/components/parameters/CsrfToken' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      x-authorization: Accepted candidate or recipient side.
+      x-business-errors: [APPLICATION_NOT_ACCEPTED, CONVERSATION_ALREADY_READY]
+      responses:
+        '202':
+          description: Retry accepted or converged to existing unique conversation.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Application' } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /teams:
+    post:
+      tags: [Teams]
+      operationId: createTeam
+      summary: Создать team; creator становится immutable leader
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      x-business-errors: [MEDIA_NOT_READY, TAG_NOT_FOUND, PAYLOAD_TOO_LARGE]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/TeamInput' } } }
+      responses:
+        '202':
+          description: Team сохранена и ожидает moderation.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Team' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /teams/{teamId}:
+    parameters: [{ $ref: '#/components/parameters/TeamId' }]
+    get:
+      tags: [Teams]
+      operationId: getTeam
+      summary: Получить active team либо own leader draft state
+      responses:
+        '200':
+          description: Team profile.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Team' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    patch:
+      tags: [Teams]
+      operationId: updateTeam
+      summary: Создать новую moderated team version
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-authorization: Current team leader only.
+      x-business-errors: [CONTENT_EDIT_LOCKED, TEAM_DELETING, MEDIA_NOT_READY, TAG_NOT_FOUND]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/TeamInput' } } }
+      responses:
+        '202':
+          description: Version pending; last approved remains visible.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Team' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    delete:
+      tags: [Teams]
+      operationId: deleteTeam
+      summary: Скрыть team и запустить cascade deletion
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-authorization: Current team leader only.
+      x-business-errors: [TEAM_DELETING]
+      responses:
+        '202': { description: Restartable deletion accepted., content: { application/json: { schema: { $ref: '#/components/schemas/DeletionStatus' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /me/teams:
+    get:
+      tags: [Teams]
+      operationId: listOwnTeams
+      summary: Получить teams пользователя
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { name: relation, in: query, schema: { type: string, enum: [leader, member] } }
+      x-sorting: createdAt descending, teamId descending.
+      responses:
+        '200': { description: Team page., content: { application/json: { schema: { $ref: '#/components/schemas/TeamPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /teams/{teamId}/members:
+    parameters: [{ $ref: '#/components/parameters/TeamId' }]
+    get:
+      tags: [Teams]
+      operationId: listTeamMembers
+      summary: Получить current team members
+      parameters: [{ $ref: '#/components/parameters/Limit' }, { $ref: '#/components/parameters/Cursor' }]
+      x-sorting: joinedAt ascending, accountId ascending.
+      responses:
+        '200': { description: Member page., content: { application/json: { schema: { $ref: '#/components/schemas/TeamMemberPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /teams/{teamId}/members/{accountId}:
+    parameters: [{ $ref: '#/components/parameters/TeamId' }, { $ref: '#/components/parameters/AccountId' }]
+    delete:
+      tags: [Teams]
+      operationId: removeTeamMember
+      summary: Удалить current member из team
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-authorization: Team leader; target must be ordinary member.
+      x-business-errors: [LEADER_CANNOT_REMOVE_SELF, MEMBERSHIP_NOT_FOUND, STATE_CONFLICT]
+      responses:
+        '204': { description: Membership removed; notification via outbox. }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /teams/{teamId}/leave:
+    parameters: [{ $ref: '#/components/parameters/TeamId' }]
+    post:
+      tags: [Teams]
+      operationId: leaveTeam
+      summary: Самостоятельно выйти из team
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      x-authorization: Ordinary current member; leader cannot leave.
+      x-business-errors: [LEADER_CANNOT_LEAVE, MEMBERSHIP_NOT_FOUND, STATE_CONFLICT]
+      responses:
+        '204': { description: Membership removed. }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /teams/{teamId}/join-requests:
+    parameters: [{ $ref: '#/components/parameters/TeamId' }]
+    post:
+      tags: [Teams]
+      operationId: createJoinRequest
+      summary: Подать join request с immutable resume snapshot
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      x-business-errors: [ALREADY_MEMBER, INTERACTION_BLOCKED, JOIN_REQUEST_EXISTS, JOIN_REQUEST_COOLDOWN]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/JoinRequestCreate' } } }
+      responses:
+        '201':
+          description: Pending join request.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/JoinRequest' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    get:
+      tags: [Teams]
+      operationId: listTeamJoinRequests
+      summary: Получить pending join requests
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { name: sort, in: query, schema: { type: string, enum: [created_asc, created_desc], default: created_asc } }
+      x-authorization: Team leader only.
+      responses:
+        '200': { description: Pending requests., content: { application/json: { schema: { $ref: '#/components/schemas/JoinRequestPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /teams/{teamId}/join-requests/me:
+    parameters: [{ $ref: '#/components/parameters/TeamId' }]
+    get:
+      tags: [Teams]
+      operationId: getOwnJoinRequest
+      summary: Получить current pending/rejected-cooldown join request
+      x-authorization: Applicant only; terminal record may already be absent.
+      responses:
+        '200':
+          description: Current join request.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/JoinRequest' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    delete:
+      tags: [Teams]
+      operationId: withdrawOwnJoinRequest
+      summary: Отозвать собственный pending join request
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-business-errors: [JOIN_REQUEST_NOT_PENDING]
+      responses:
+        '204': { description: Request withdrawn; immediate reapply allowed. }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /join-requests/{requestId}/decision:
+    parameters: [{ $ref: '#/components/parameters/JoinRequestId' }]
+    post:
+      tags: [Teams]
+      operationId: decideJoinRequest
+      summary: Одобрить или отклонить pending join request
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-authorization: Current leader of source team.
+      x-business-errors: [JOIN_REQUEST_ALREADY_DECIDED, INTERACTION_BLOCKED, STATE_CONFLICT]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/JoinRequestDecision' } } } }
+      responses:
+        '200':
+          description: Decision committed; approval atomically creates membership.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/JoinRequest' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /teams/{teamId}/invitations:
+    parameters: [{ $ref: '#/components/parameters/TeamId' }]
+    post:
+      tags: [Teams]
+      operationId: createTeamInvitation
+      summary: Пригласить пользователя в team
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      x-authorization: Team leader only.
+      x-business-errors: [ALREADY_MEMBER, INTERACTION_BLOCKED, INVITATION_EXISTS]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TeamInvitationCreate' } } } }
+      responses:
+        '201':
+          description: Pending invitation.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/TeamInvitation' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    get:
+      tags: [Teams]
+      operationId: listTeamInvitations
+      summary: Получить pending invitations команды
+      parameters: [{ $ref: '#/components/parameters/Limit' }, { $ref: '#/components/parameters/Cursor' }]
+      x-authorization: Team leader only.
+      x-sorting: createdAt descending, invitationId descending.
+      responses:
+        '200': { description: Invitation page., content: { application/json: { schema: { $ref: '#/components/schemas/TeamInvitationPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /me/team-invitations:
+    get:
+      tags: [Teams]
+      operationId: listOwnTeamInvitations
+      summary: Получить pending invitations текущего пользователя
+      parameters: [{ $ref: '#/components/parameters/Limit' }, { $ref: '#/components/parameters/Cursor' }]
+      x-sorting: createdAt descending, invitationId descending.
+      responses:
+        '200': { description: Invitation page., content: { application/json: { schema: { $ref: '#/components/schemas/TeamInvitationPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /team-invitations/{invitationId}/decision:
+    parameters: [{ $ref: '#/components/parameters/InvitationId' }]
+    post:
+      tags: [Teams]
+      operationId: decideTeamInvitation
+      summary: Принять или отклонить invitation
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-authorization: Invitee only.
+      x-business-errors: [INVITATION_ALREADY_DECIDED, INTERACTION_BLOCKED, STATE_CONFLICT]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/InvitationDecision' } } } }
+      responses:
+        '200':
+          description: Decision committed; acceptance atomically creates membership.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/TeamInvitation' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /team-invitations/{invitationId}:
+    parameters: [{ $ref: '#/components/parameters/InvitationId' }]
+    delete:
+      tags: [Teams]
+      operationId: revokeTeamInvitation
+      summary: Отозвать pending invitation
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-authorization: Current leader of source team.
+      x-business-errors: [INVITATION_NOT_PENDING, STATE_CONFLICT]
+      responses:
+        '204': { description: Invitation revoked. }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /teams/{teamId}/subscription:
+    parameters: [{ $ref: '#/components/parameters/TeamId' }]
+    put:
+      tags: [Teams]
+      operationId: subscribeToTeam
+      summary: Подписаться на active team
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }]
+      x-idempotency: HTTP PUT plus unique relation; duplicate returns 204.
+      x-business-errors: [TEAM_NOT_ACTIVE]
+      responses:
+        '204': { description: Subscription exists. }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    delete:
+      tags: [Teams]
+      operationId: unsubscribeFromTeam
+      summary: Отписаться от team
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }]
+      x-idempotency: HTTP DELETE; duplicate returns 204.
+      responses:
+        '204': { description: Subscription absent; team events disappear from calendar. }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /teams/{teamId}/subscribers:
+    parameters: [{ $ref: '#/components/parameters/TeamId' }]
+    get:
+      tags: [Teams]
+      operationId: listTeamSubscribers
+      summary: Получить subscribers в объёме people search projection
+      parameters: [{ $ref: '#/components/parameters/Limit' }, { $ref: '#/components/parameters/Cursor' }]
+      x-authorization: Team leader only.
+      x-sorting: subscribedAt descending, accountId descending.
+      responses:
+        '200': { description: Subscriber page., content: { application/json: { schema: { $ref: '#/components/schemas/SubscriberPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /teams/{teamId}/blocks/{accountId}:
+    parameters: [{ $ref: '#/components/parameters/TeamId' }, { $ref: '#/components/parameters/AccountId' }]
+    put:
+      tags: [Teams]
+      operationId: blockAccountForTeam
+      summary: Добавить account в team blacklist
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-idempotency: HTTP PUT plus unique relation.
+      x-authorization: Team leader only.
+      x-business-errors: [LEADER_CANNOT_BLOCK_SELF, MEMBER_MUST_BE_REMOVED_FIRST, STATE_CONFLICT]
+      requestBody: { required: false, content: { application/json: { schema: { $ref: '#/components/schemas/BlockInput' } } } }
+      responses:
+        '204': { description: Block exists; pending request rejected and invitation revoked atomically. }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    delete:
+      tags: [Teams]
+      operationId: unblockAccountForTeam
+      summary: Удалить account из team blacklist
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-idempotency: HTTP DELETE; duplicate returns 204.
+      x-authorization: Team leader only.
+      responses:
+        '204': { description: Team block absent. }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /teams/{teamId}/blocks:
+    parameters: [{ $ref: '#/components/parameters/TeamId' }]
+    get:
+      tags: [Teams]
+      operationId: listTeamBlocks
+      summary: Получить team blacklist
+      parameters: [{ $ref: '#/components/parameters/Limit' }, { $ref: '#/components/parameters/Cursor' }]
+      x-authorization: Team leader only.
+      x-sorting: createdAt descending, accountId descending.
+      responses:
+        '200': { description: Blocked account page., content: { application/json: { schema: { $ref: '#/components/schemas/BlockedAccountPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /teams/{teamId}/events:
+    parameters: [{ $ref: '#/components/parameters/TeamId' }]
+    post:
+      tags: [Scheduling]
+      operationId: createTeamEvent
+      summary: Создать moderated team event
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      x-authorization: Team leader only.
+      x-business-errors: [INVALID_EVENT_TIME, INVALID_TIMEZONE, MEDIA_NOT_READY, TAG_NOT_FOUND, NOT_TEAM_LEADER]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/EventInput' } } } }
+      responses:
+        '202':
+          description: Event pending moderation.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/TeamEvent' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    get:
+      tags: [Scheduling]
+      operationId: listTeamEventsForManagement
+      summary: Получить team events для управления
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - name: state
+          in: query
+          schema: { type: string, enum: [draft, pending, scheduled, cancelled, revision_required, deleting] }
+      x-authorization: Team leader only; includes non-public states.
+      x-sorting: startsAt ascending, eventId ascending.
+      responses:
+        '200': { description: Team event page., content: { application/json: { schema: { $ref: '#/components/schemas/CalendarEventPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /events/{eventId}:
+    parameters: [{ $ref: '#/components/parameters/EventId' }]
+    get:
+      tags: [Scheduling]
+      operationId: getTeamEvent
+      summary: Получить team event
+      x-authorization: Subscriber while visible or team leader for own state.
+      responses:
+        '200':
+          description: Team event.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/TeamEvent' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    patch:
+      tags: [Scheduling]
+      operationId: updateTeamEvent
+      summary: Создать новую moderated event version
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-authorization: Team leader only.
+      x-business-errors: [CONTENT_EDIT_LOCKED, EVENT_CANCELLED, INVALID_EVENT_TIME, INVALID_TIMEZONE, MEDIA_NOT_READY]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/EventInput' } } } }
+      responses:
+        '202':
+          description: Event version pending moderation.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/TeamEvent' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    delete:
+      tags: [Scheduling]
+      operationId: deleteTeamEvent
+      summary: Скрыть и удалить team event
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-authorization: Team leader only.
+      x-business-errors: [EVENT_DELETING]
+      responses:
+        '202': { description: Deletion accepted., content: { application/json: { schema: { $ref: '#/components/schemas/DeletionStatus' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /events/{eventId}/cancellation:
+    parameters: [{ $ref: '#/components/parameters/EventId' }]
+    post:
+      tags: [Scheduling]
+      operationId: cancelTeamEvent
+      summary: Необратимо отменить event
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-authorization: Team leader only.
+      x-business-errors: [EVENT_ALREADY_CANCELLED, STATE_CONFLICT]
+      responses:
+        '200':
+          description: Event cancelled; follower notifications are eventual.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/TeamEvent' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /calendar:
+    get:
+      tags: [Scheduling]
+      operationId: getCalendar
+      summary: Получить events current subscriptions в диапазоне
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { name: from, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: timezone, in: query, schema: { $ref: '#/components/schemas/TimeZone' } }
+      x-validation: from must be before to; range <= 366 days.
+      x-business-errors: [INVALID_DATE_RANGE, INVALID_TIMEZONE]
+      x-sorting: startsAt ascending, eventId ascending.
+      responses:
+        '200': { description: Calendar event page., content: { application/json: { schema: { $ref: '#/components/schemas/CalendarEventPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /conversations/direct:
+    post:
+      tags: [Messaging]
+      operationId: createDirectConversation
+      summary: Найти или создать unique direct conversation
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      x-business-errors: [CANNOT_MESSAGE_SELF, INTERACTION_BLOCKED]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/DirectConversationCreate' } } } }
+      responses:
+        '200': { description: Existing conversation., content: { application/json: { schema: { $ref: '#/components/schemas/Conversation' } } } }
+        '201': { description: New conversation., content: { application/json: { schema: { $ref: '#/components/schemas/Conversation' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /conversations:
+    get:
+      tags: [Messaging]
+      operationId: listConversations
+      summary: Получить visible conversations текущего участника
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { name: kind, in: query, schema: { $ref: '#/components/schemas/ConversationKind' } }
+      x-sorting: participant sortAt descending, conversationId descending.
+      responses:
+        '200': { description: Conversation page., content: { application/json: { schema: { $ref: '#/components/schemas/ConversationPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /conversations/{conversationId}:
+    parameters: [{ $ref: '#/components/parameters/ConversationId' }]
+    get:
+      tags: [Messaging]
+      operationId: getConversation
+      summary: Получить conversation metadata и application context
+      x-authorization: Current participant or authorized team-leader participant.
+      responses:
+        '200': { description: Conversation., content: { application/json: { schema: { $ref: '#/components/schemas/Conversation' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    delete:
+      tags: [Messaging]
+      operationId: deleteConversation
+      summary: Скрыть chat у себя либо физически удалить у обеих сторон
+      parameters:
+        - { $ref: '#/components/parameters/CsrfToken' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { name: scope, in: query, required: true, schema: { type: string, enum: [me, both] } }
+      x-authorization: Current participant.
+      x-business-errors: [CONVERSATION_DELETING, DELETE_SCOPE_INVALID]
+      responses:
+        '202': { description: 'For scope both, physical deletion workflow accepted.', content: { application/json: { schema: { $ref: '#/components/schemas/DeletionStatus' } } } }
+        '204': { description: 'For scope me, hidden for initiator.' }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /conversations/{conversationId}/messages:
+    parameters: [{ $ref: '#/components/parameters/ConversationId' }]
+    get:
+      tags: [Messaging]
+      operationId: listMessages
+      summary: Получить messages conversation
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 30 } }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { name: before, in: query, schema: { type: string, format: date-time } }
+      x-authorization: Current participant.
+      x-sorting: createdAt descending, messageId descending.
+      responses:
+        '200': { description: Message page., content: { application/json: { schema: { $ref: '#/components/schemas/MessagePage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    post:
+      tags: [Messaging]
+      operationId: createMessage
+      summary: Отправить text и/или до 10 ready private photos
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      x-authorization: Current participant; interaction unblocked at transaction time.
+      x-business-errors: [INTERACTION_BLOCKED, MEDIA_NOT_READY, MEDIA_SCOPE_MISMATCH, MESSAGE_EMPTY]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/MessageCreate' } } } }
+      responses:
+        '201':
+          description: Message and bindings committed; photo quota eviction scheduled only after success.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Message' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /messages/{messageId}:
+    parameters: [{ $ref: '#/components/parameters/MessageId' }]
+    patch:
+      tags: [Messaging]
+      operationId: updateMessage
+      summary: Изменить body своего message без создания ordinary history
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-business-errors: [MESSAGE_DELETED, CONTENT_EDIT_LOCKED]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/MessageUpdate' } } } }
+      responses:
+        '200':
+          description: Message edited in place.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Message' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    delete:
+      tags: [Messaging]
+      operationId: deleteMessage
+      summary: Удалить body и attachments своего message
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-business-errors: [MESSAGE_ALREADY_DELETED]
+      responses:
+        '204': { description: Message tombstone remains only while live chat needs it. }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /conversations/{conversationId}/read:
+    parameters: [{ $ref: '#/components/parameters/ConversationId' }]
+    post:
+      tags: [Messaging]
+      operationId: markConversationRead
+      summary: Монотонно продвинуть read cursor
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      x-business-errors: [MESSAGE_NOT_IN_CONVERSATION]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/MarkRead' } } } }
+      responses:
+        '204': { description: Cursor advanced; same/older cursor is a no-op. }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /me/blocks:
+    get:
+      tags: [Messaging]
+      operationId: listPersonalBlocks
+      summary: Получить personal blacklist
+      parameters: [{ $ref: '#/components/parameters/Limit' }, { $ref: '#/components/parameters/Cursor' }]
+      x-sorting: createdAt descending, accountId descending.
+      responses:
+        '200': { description: Blocked account page., content: { application/json: { schema: { $ref: '#/components/schemas/BlockedAccountPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /me/blocks/{accountId}:
+    parameters: [{ $ref: '#/components/parameters/AccountId' }]
+    put:
+      tags: [Messaging]
+      operationId: blockAccountPersonally
+      summary: Добавить account в personal blacklist
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }]
+      x-idempotency: HTTP PUT plus unique relation.
+      x-business-errors: [CANNOT_BLOCK_SELF, STATE_CONFLICT]
+      responses:
+        '204': { description: 'Block exists; pending interactions are closed atomically, chat history remains.' }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    delete:
+      tags: [Messaging]
+      operationId: unblockAccountPersonally
+      summary: Удалить personal block
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }]
+      x-idempotency: HTTP DELETE; duplicate returns 204.
+      responses:
+        '204': { description: Block absent; history unchanged. }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /notifications:
+    get:
+      tags: [Notifications]
+      operationId: listNotifications
+      summary: Получить in-app notifications текущего recipient
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { name: unreadOnly, in: query, schema: { type: boolean, default: false } }
+        - { name: type, in: query, schema: { type: string, maxLength: 80 } }
+      x-sorting: createdAt descending, notificationId descending.
+      responses:
+        '200': { description: Notification page; resource authorization is rechecked on navigation., content: { application/json: { schema: { $ref: '#/components/schemas/NotificationPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /notifications/{notificationId}:
+    parameters: [{ $ref: '#/components/parameters/NotificationId' }]
+    patch:
+      tags: [Notifications]
+      operationId: markNotificationRead
+      summary: Пометить notification прочитанным
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/OptionalIdempotencyKey' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-authorization: Recipient only.
+      x-business-errors: [NOTIFICATION_NOT_FOUND]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/NotificationUpdate' } } } }
+      responses:
+        '200':
+          description: Notification read; repeat is safe.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Notification' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /notifications/read-all:
+    post:
+      tags: [Notifications]
+      operationId: markAllNotificationsRead
+      summary: Пометить прочитанными notifications до high-water timestamp
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { required: false, content: { application/json: { schema: { $ref: '#/components/schemas/ReadAllNotifications' } } } }
+      responses:
+        '200': { description: Count of changed rows., content: { application/json: { schema: { $ref: '#/components/schemas/UpdatedCount' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /reports:
+    post:
+      tags: [Trust]
+      operationId: createReport
+      summary: Создать complaint; для message атомарно capture evidence revision
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      x-authorization: Reporter can currently access target.
+      x-business-errors: [OPEN_REPORT_EXISTS, TARGET_NOT_REPORTABLE, EVIDENCE_CAPTURE_FAILED]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReportCreate' } } } }
+      responses:
+        '201':
+          description: Report accepted with deadline.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Report' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /me/reports:
+    get:
+      tags: [Trust]
+      operationId: listOwnReports
+      summary: Получить свои reports и их status
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/ReportStatus' } }
+      x-sorting: createdAt descending, reportId descending.
+      responses:
+        '200': { description: Report page., content: { application/json: { schema: { $ref: '#/components/schemas/ReportPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /reports/{reportId}:
+    parameters: [{ $ref: '#/components/parameters/ReportId' }]
+    get:
+      tags: [Trust]
+      operationId: getReport
+      summary: Получить field-filtered report status
+      x-authorization: Reporter, target owner, or assigned moderator with reports.review. Reporter identity hidden from target owner.
+      responses:
+        '200':
+          description: Field-level filtered report.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Report' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /moderation-decisions/{decisionId}/appeals:
+    parameters: [{ $ref: '#/components/parameters/DecisionId' }]
+    post:
+      tags: [Trust]
+      operationId: createAppeal
+      summary: Один раз обжаловать return-for-revision decision
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      x-authorization: Affected content owner.
+      x-business-errors: [APPEAL_ALREADY_EXISTS, DECISION_NOT_APPEALABLE]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AppealCreate' } } } }
+      responses:
+        '201':
+          description: Appeal pending; content edit locked.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Appeal' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /me/appeals:
+    get:
+      tags: [Trust]
+      operationId: listOwnAppeals
+      summary: Получить свои appeals
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/AppealStatus' } }
+      x-sorting: createdAt descending, appealId descending.
+      responses:
+        '200': { description: Appeal page., content: { application/json: { schema: { $ref: '#/components/schemas/AppealPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /moderation/reports:
+    get:
+      tags: [Moderation]
+      operationId: listModerationReports
+      summary: Получить moderator report queue
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/ReportStatus' } }
+        - { name: kind, in: query, schema: { $ref: '#/components/schemas/ReportKind' } }
+        - { name: priority, in: query, schema: { type: integer, minimum: 0, maximum: 32767 } }
+        - { name: assignedToMe, in: query, schema: { type: boolean } }
+      x-authorization: Moderator permission reports.review.
+      x-sorting: priority descending, deadlineAt ascending, reportId ascending.
+      responses:
+        '200': { description: Moderator report page., content: { application/json: { schema: { $ref: '#/components/schemas/ReportPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /moderation/reports/{reportId}/claim:
+    parameters: [{ $ref: '#/components/parameters/ReportId' }]
+    post:
+      tags: [Moderation]
+      operationId: claimModerationReport
+      summary: Назначить open report текущему moderator
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-authorization: Moderator permission reports.review.
+      x-business-errors: [ALREADY_ASSIGNED, REPORT_ALREADY_RESOLVED]
+      responses:
+        '200':
+          description: Claimed report.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Report' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /moderation/reports/{reportId}/evidence:
+    parameters: [{ $ref: '#/components/parameters/ReportId' }]
+    get:
+      tags: [Moderation]
+      operationId: getModerationReportEvidence
+      summary: Получить evidence назначенной open complaint
+      x-authorization: Assigned moderator with evidence.view; every access audited.
+      x-business-errors: [EVIDENCE_UNAVAILABLE, REPORT_NOT_ASSIGNED]
+      responses:
+        '200':
+          description: Evidence without caching; attachment URLs are one-time and short-lived.
+          headers: { Cache-Control: { schema: { type: string, const: no-store } } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Evidence' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /moderation/reports/{reportId}/decision:
+    parameters: [{ $ref: '#/components/parameters/ReportId' }]
+    post:
+      tags: [Moderation]
+      operationId: decideModerationReport
+      summary: Необратимо подтвердить или отклонить report
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-authorization: Assigned moderator with reports.review.
+      x-business-errors: [REPORT_ALREADY_RESOLVED, STATE_CONFLICT]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReportDecision' } } } }
+      responses:
+        '200':
+          description: Decision committed; confirmed returns content for revision and never deletes it.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Report' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /moderation/reviews:
+    get:
+      tags: [Moderation]
+      operationId: listManualReviews
+      summary: Получить manual review queue
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/ManualReviewStatus' } }
+        - { name: contentType, in: query, schema: { $ref: '#/components/schemas/ModeratedContentType' } }
+        - { name: assignedToMe, in: query, schema: { type: boolean } }
+        - { name: escalated, in: query, schema: { type: boolean } }
+      x-authorization: Moderator reports.review; escalated claim/decision additionally moderation.escalated_review.
+      x-sorting: priority descending, deadlineAt ascending, reviewId ascending.
+      responses:
+        '200': { description: Manual review page., content: { application/json: { schema: { $ref: '#/components/schemas/ManualReviewPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /moderation/reviews/{reviewId}/claim:
+    parameters: [{ $ref: '#/components/parameters/ReviewId' }]
+    post:
+      tags: [Moderation]
+      operationId: claimManualReview
+      summary: Назначить open manual review текущему moderator
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-business-errors: [ALREADY_ASSIGNED, REVIEW_ALREADY_RESOLVED]
+      responses:
+        '200':
+          description: Claimed review.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ManualReview' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /moderation/reviews/{reviewId}/decision:
+    parameters: [{ $ref: '#/components/parameters/ReviewId' }]
+    post:
+      tags: [Moderation]
+      operationId: decideManualReview
+      summary: Одобрить или вернуть content version на доработку
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-authorization: Assigned moderator with required review/escalation permissions.
+      x-business-errors: [REVIEW_ALREADY_RESOLVED, STATE_CONFLICT]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ManualReviewDecision' } } } }
+      responses:
+        '200':
+          description: Terminal review decision; no fail-open.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ManualReview' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /moderation/appeals:
+    get:
+      tags: [Moderation]
+      operationId: listModerationAppeals
+      summary: Получить moderator appeal queue
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/AppealStatus' } }
+        - { name: assignedToMe, in: query, schema: { type: boolean } }
+        - { name: escalated, in: query, schema: { type: boolean } }
+      x-authorization: Moderator appeals.review; escalation permission for escalated action.
+      x-sorting: priority descending, deadlineAt ascending, appealId ascending.
+      responses:
+        '200': { description: Appeal page., content: { application/json: { schema: { $ref: '#/components/schemas/AppealPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /moderation/appeals/{appealId}/claim:
+    parameters: [{ $ref: '#/components/parameters/AppealId' }]
+    post:
+      tags: [Moderation]
+      operationId: claimModerationAppeal
+      summary: Назначить open appeal текущему moderator
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-business-errors: [ALREADY_ASSIGNED, APPEAL_ALREADY_RESOLVED]
+      responses:
+        '200':
+          description: Claimed appeal.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Appeal' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /moderation/appeals/{appealId}/decision:
+    parameters: [{ $ref: '#/components/parameters/AppealId' }]
+    post:
+      tags: [Moderation]
+      operationId: decideModerationAppeal
+      summary: Необратимо подтвердить или отменить moderation decision
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-authorization: Assigned moderator with appeals.review and escalation permission when applicable.
+      x-business-errors: [APPEAL_ALREADY_RESOLVED, STATE_CONFLICT]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AppealDecision' } } } }
+      responses:
+        '200':
+          description: Terminal appeal; overturned restores last approved version.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Appeal' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /privacy-requests:
+    post:
+      tags: [Compliance]
+      operationId: createPrivacyRequest
+      summary: Запросить export/correction/restriction/account deletion
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      x-authorization: Current active account; deletion additionally requires recent re-authentication.
+      x-business-errors: [OPEN_DELETION_REQUEST_EXISTS, REAUTH_REQUIRED]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PrivacyRequestCreate' } } } }
+      responses:
+        '202':
+          description: Request accepted; deletion immediately hides account and revokes other sessions.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/PrivacyRequest' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+    get:
+      tags: [Compliance]
+      operationId: listPrivacyRequests
+      summary: Получить свои privacy requests
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { name: type, in: query, schema: { $ref: '#/components/schemas/PrivacyRequestType' } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/PrivacyRequestStatus' } }
+      x-authorization: Current session including deleting account.
+      x-sorting: requestedAt descending, requestId descending.
+      responses:
+        '200': { description: Privacy request page., content: { application/json: { schema: { $ref: '#/components/schemas/PrivacyRequestPage' } } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /privacy-requests/{requestId}:
+    parameters: [{ $ref: '#/components/parameters/PrivacyRequestId' }]
+    get:
+      tags: [Compliance]
+      operationId: getPrivacyRequest
+      summary: Получить свой privacy request
+      x-authorization: Owner session including deleting account.
+      responses:
+        '200':
+          description: Privacy request; no embedded export payload.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/PrivacyRequest' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /privacy-requests/{requestId}/cancel:
+    parameters: [{ $ref: '#/components/parameters/PrivacyRequestId' }]
+    post:
+      tags: [Compliance]
+      operationId: cancelPrivacyRequest
+      summary: Отменить deletion request до irreversibleAt
+      parameters: [{ $ref: '#/components/parameters/CsrfToken' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/IfMatch' }]
+      x-authorization: Owner session in deleting account state.
+      x-business-errors: [DELETION_ALREADY_IRREVERSIBLE, REQUEST_NOT_CANCELLABLE]
+      responses:
+        '200':
+          description: Deletion cancelled and account restored to active.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/PrivacyRequest' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+  /privacy-requests/{requestId}/result-url:
+    parameters: [{ $ref: '#/components/parameters/PrivacyRequestId' }]
+    get:
+      tags: [Compliance]
+      operationId: getPrivacyRequestResultUrl
+      summary: Получить one-time URL готовой data export
+      x-authorization: Owner session; completed export request only.
+      x-business-errors: [PRIVACY_RESULT_NOT_READY, PRIVACY_RESULT_EXPIRED]
+      responses:
+        '200':
+          description: One-time URL with TTL no longer than five minutes.
+          headers: { Cache-Control: { schema: { type: string, const: no-store } } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/DownloadUrl' } } }
+        '4XX': { $ref: '#/components/responses/Problem4xx' }
+        '5XX': { $ref: '#/components/responses/Problem5xx' }
+components:
+  securitySchemes:
+    CookieSession:
+      type: apiKey
+      in: cookie
+      name: __Host-session
+      description: Opaque, Secure, HttpOnly, SameSite=Lax session cookie.
+  headers:
+    ETag:
+      description: Quoted decimal rowVersion used by If-Match.
+      schema: { type: string, pattern: '^"[0-9]+"$' }
+  parameters:
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: Session-bound CSRF token; Origin must also be allowlisted.
+      schema: { type: string, minLength: 32, maxLength: 256 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Scoped to account, method and normalized route; retained at least 24h.
+      schema: { type: string, minLength: 1, maxLength: 128, pattern: '^[\x21-\x7E]+$' }
+    OptionalIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string, minLength: 1, maxLength: 128, pattern: '^[\x21-\x7E]+$' }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: ETag полученного resource; missing=428, stale=412.
+      schema: { type: string, pattern: '^"[0-9]+"$' }
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque signed cursor bound to route, filters and sort.
+      schema: { type: string, minLength: 1, maxLength: 2048 }
+    AccountId: { name: accountId, in: path, required: true, schema: { $ref: '#/components/schemas/Uuid' } }
+    ResumeId: { name: resumeId, in: path, required: true, schema: { $ref: '#/components/schemas/Uuid' } }
+    UploadId: { name: uploadId, in: path, required: true, schema: { $ref: '#/components/schemas/Uuid' } }
+    MediaId: { name: mediaId, in: path, required: true, schema: { $ref: '#/components/schemas/Uuid' } }
+    OpportunityId: { name: opportunityId, in: path, required: true, schema: { $ref: '#/components/schemas/Uuid' } }
+    ApplicationId: { name: applicationId, in: path, required: true, schema: { $ref: '#/components/schemas/Uuid' } }
+    TeamId: { name: teamId, in: path, required: true, schema: { $ref: '#/components/schemas/Uuid' } }
+    JoinRequestId: { name: requestId, in: path, required: true, schema: { $ref: '#/components/schemas/Uuid' } }
+    InvitationId: { name: invitationId, in: path, required: true, schema: { $ref: '#/components/schemas/Uuid' } }
+    EventId: { name: eventId, in: path, required: true, schema: { $ref: '#/components/schemas/Uuid' } }
+    ConversationId: { name: conversationId, in: path, required: true, schema: { $ref: '#/components/schemas/Uuid' } }
+    MessageId: { name: messageId, in: path, required: true, schema: { $ref: '#/components/schemas/Uuid' } }
+    NotificationId: { name: notificationId, in: path, required: true, schema: { $ref: '#/components/schemas/Uuid' } }
+    ReportId: { name: reportId, in: path, required: true, schema: { $ref: '#/components/schemas/Uuid' } }
+    DecisionId: { name: decisionId, in: path, required: true, schema: { $ref: '#/components/schemas/Uuid' } }
+    ReviewId: { name: reviewId, in: path, required: true, schema: { $ref: '#/components/schemas/Uuid' } }
+    AppealId: { name: appealId, in: path, required: true, schema: { $ref: '#/components/schemas/Uuid' } }
+    PrivacyRequestId: { name: requestId, in: path, required: true, schema: { $ref: '#/components/schemas/Uuid' } }
+  responses:
+    Problem4xx:
+      description: Client/authentication/authorization/validation/business/concurrency error.
+      headers:
+        X-Request-Id: { schema: { $ref: '#/components/schemas/Uuid' } }
+        Retry-After: { schema: { type: integer, minimum: 0 } }
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } }
+    Problem5xx:
+      description: Safe server/upstream error; retry only when error.retryable=true.
+      headers:
+        X-Request-Id: { schema: { $ref: '#/components/schemas/Uuid' } }
+        Retry-After: { schema: { type: integer, minimum: 0 } }
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } }
+    OperationAccepted:
+      description: Request accepted without revealing account existence.
+      content:
+        application/json: { schema: { $ref: '#/components/schemas/OperationAccepted' } }
+  schemas:
+    Uuid:
+      type: string
+      format: uuid
+      description: UUIDv7 in canonical lowercase form.
+    TimeZone:
+      type: string
+      minLength: 1
+      maxLength: 64
+      default: Europe/Moscow
+      examples: [Europe/Moscow]
+    FormalRole: { type: string, enum: [student, teacher, employer] }
+    SystemRole: { type: string, enum: [user, moderator] }
+    AccountState: { type: string, enum: [unverified, active, deleting, deleted] }
+    AuthorKind: { type: string, enum: [account, team] }
+    PublicationState: { type: string, enum: [draft, pending, published, revision_required, hidden, deleting] }
+    PageInfo:
+      type: object
+      additionalProperties: false
+      required: [nextCursor, hasMore]
+      properties:
+        nextCursor: { type: [string, "null"], maxLength: 2048 }
+        hasMore: { type: boolean }
+    FieldError:
+      type: object
+      additionalProperties: false
+      required: [path, code, message]
+      properties:
+        path: { type: string, maxLength: 256 }
+        code: { type: string, pattern: '^[A-Z0-9_]+$', maxLength: 80 }
+        message: { type: string, maxLength: 500 }
+    ErrorBody:
+      type: object
+      additionalProperties: false
+      required: [code, message, requestId, retryable, details, fieldErrors]
+      properties:
+        code: { type: string, pattern: '^[A-Z0-9_]+$', maxLength: 100 }
+        message: { type: string, minLength: 1, maxLength: 1000 }
+        requestId: { $ref: '#/components/schemas/Uuid' }
+        retryable: { type: boolean }
+        details:
+          type: object
+          description: Safe documented metadata; no secrets or private content.
+          additionalProperties: true
+        fieldErrors:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/FieldError' }
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/ErrorBody' }
+    OperationAccepted:
+      type: object
+      additionalProperties: false
+      required: [accepted]
+      properties:
+        accepted: { type: boolean, const: true }
+    CsrfToken:
+      type: object
+      additionalProperties: false
+      required: [csrfToken]
+      properties:
+        csrfToken: { type: string, minLength: 32, maxLength: 256 }
+    ConsentAcceptance:
+      type: object
+      additionalProperties: false
+      required: [documentType, documentVersion, accepted]
+      properties:
+        documentType: { type: string, enum: [age_18, user_terms, personal_data, public_profile_distribution] }
+        documentVersion: { type: string, minLength: 1, maxLength: 64 }
+        accepted: { type: boolean, const: true }
+    RegistrationRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password, formalRole, profile, consents]
+      properties:
+        email: { type: string, format: email, maxLength: 320 }
+        password: { type: string, format: password, minLength: 12, maxLength: 128, writeOnly: true }
+        formalRole: { $ref: '#/components/schemas/FormalRole' }
+        profile: { $ref: '#/components/schemas/ProfileInput' }
+        consents:
+          type: array
+          minItems: 4
+          maxItems: 4
+          items: { $ref: '#/components/schemas/ConsentAcceptance' }
+    RegistrationResult:
+      type: object
+      additionalProperties: false
+      required: [accountId, accountState, verificationEmailQueued]
+      properties:
+        accountId: { $ref: '#/components/schemas/Uuid' }
+        accountState: { type: string, const: unverified }
+        verificationEmailQueued: { type: boolean }
+    TokenRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token: { type: string, minLength: 32, maxLength: 2048, writeOnly: true }
+    EmailRequest:
+      type: object
+      additionalProperties: false
+      required: [email]
+      properties:
+        email: { type: string, format: email, maxLength: 320 }
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email: { type: string, format: email, maxLength: 320 }
+        password: { type: string, format: password, minLength: 1, maxLength: 128, writeOnly: true }
+    PasswordResetConfirm:
+      type: object
+      additionalProperties: false
+      required: [token, password]
+      properties:
+        token: { type: string, minLength: 32, maxLength: 2048, writeOnly: true }
+        password: { type: string, format: password, minLength: 12, maxLength: 128, writeOnly: true }
+    SessionView:
+      type: object
+      additionalProperties: false
+      required: [accountId, accountState, expiresAt]
+      properties:
+        accountId: { $ref: '#/components/schemas/Uuid' }
+        accountState: { $ref: '#/components/schemas/AccountState' }
+        expiresAt: { type: string, format: date-time }
+    CurrentAccount:
+      type: object
+      additionalProperties: false
+      required: [id, formalRole, systemRole, state, emailVerified, capabilities, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        formalRole: { $ref: '#/components/schemas/FormalRole' }
+        systemRole: { $ref: '#/components/schemas/SystemRole' }
+        state: { $ref: '#/components/schemas/AccountState' }
+        emailVerified: { type: boolean }
+        capabilities:
+          type: array
+          uniqueItems: true
+          items: { type: string, maxLength: 100 }
+        deletionIrreversibleAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+    ProfileInput:
+      type: object
+      additionalProperties: false
+      required: [fullName, specialization, timezone]
+      properties:
+        fullName: { type: string, minLength: 1, maxLength: 200 }
+        specialization: { type: string, minLength: 1, maxLength: 200 }
+        timezone: { $ref: '#/components/schemas/TimeZone' }
+        institute: { type: string, minLength: 1, maxLength: 200 }
+        course: { type: integer, minimum: 1, maximum: 6 }
+        department: { type: string, minLength: 1, maxLength: 200 }
+        company: { type: string, minLength: 1, maxLength: 200 }
+        position: { type: string, minLength: 1, maxLength: 200 }
+        avatarMediaId: { $ref: '#/components/schemas/Uuid' }
+      description: Role-specific requirements are enforced using account formalRole.
+    Profile:
+      type: object
+      additionalProperties: false
+      required: [id, accountId, formalRole, publicationState, editLocked, rowVersion, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        accountId: { $ref: '#/components/schemas/Uuid' }
+        formalRole: { $ref: '#/components/schemas/FormalRole' }
+        publicationState: { $ref: '#/components/schemas/PublicationState' }
+        published: { $ref: '#/components/schemas/ProfileInput' }
+        pending: { $ref: '#/components/schemas/ProfileInput' }
+        editLocked: { type: boolean }
+        moderation: { $ref: '#/components/schemas/ModerationStatus' }
+        rowVersion: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    PublicProfile:
+      type: object
+      additionalProperties: false
+      required: [accountId, formalRole, profile, resumes]
+      properties:
+        accountId: { $ref: '#/components/schemas/Uuid' }
+        formalRole: { $ref: '#/components/schemas/FormalRole' }
+        profile: { $ref: '#/components/schemas/ProfileInput' }
+        resumes:
+          type: array
+          maxItems: 6
+          items: { $ref: '#/components/schemas/PublicResume' }
+    Project:
+      type: object
+      additionalProperties: false
+      required: [title, description]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, minLength: 1, maxLength: 2000 }
+        url: { type: string, format: uri, maxLength: 2048 }
+    ResumeInput:
+      type: object
+      additionalProperties: false
+      required: [about, projects, tagIds, searchVisible]
+      properties:
+        about: { type: string, maxLength: 1024 }
+        projects: { type: array, maxItems: 10, items: { $ref: '#/components/schemas/Project' } }
+        tagIds: { type: array, maxItems: 20, uniqueItems: true, items: { $ref: '#/components/schemas/Uuid' } }
+        searchVisible: { type: boolean }
+        imageMediaId: { $ref: '#/components/schemas/Uuid' }
+    PublicResume:
+      type: object
+      additionalProperties: false
+      required: [id, slot, about, projects, tagIds]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        slot: { type: integer, minimum: 0, maximum: 5 }
+        about: { type: string, maxLength: 1024 }
+        projects: { type: array, maxItems: 10, items: { $ref: '#/components/schemas/Project' } }
+        tagIds: { type: array, maxItems: 20, items: { $ref: '#/components/schemas/Uuid' } }
+        imageMediaId: { $ref: '#/components/schemas/Uuid' }
+    Resume:
+      type: object
+      additionalProperties: false
+      required: [id, slot, primary, searchVisible, publicationState, editLocked, rowVersion, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        slot: { type: integer, minimum: 0, maximum: 5 }
+        primary: { type: boolean }
+        searchVisible: { type: boolean }
+        publicationState: { $ref: '#/components/schemas/PublicationState' }
+        published: { $ref: '#/components/schemas/ResumeInput' }
+        pending: { $ref: '#/components/schemas/ResumeInput' }
+        editLocked: { type: boolean }
+        moderation: { $ref: '#/components/schemas/ModerationStatus' }
+        rowVersion: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ResumeList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, maxItems: 6, items: { $ref: '#/components/schemas/Resume' } }
+    ModerationStatus:
+      type: object
+      additionalProperties: false
+      required: [state]
+      properties:
+        state: { type: string, enum: [not_submitted, pending, approved, revision_required, failed, manual_review_pending, appeal_pending] }
+        decisionId: { $ref: '#/components/schemas/Uuid' }
+        deadlineAt: { type: string, format: date-time }
+        violationCodes: { type: array, uniqueItems: true, items: { type: string, maxLength: 100 } }
+        reason: { type: string, maxLength: 2000 }
+    Tag:
+      type: object
+      additionalProperties: false
+      required: [id, code, name, category, sortOrder]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        code: { type: string, maxLength: 80 }
+        name: { type: string, maxLength: 120 }
+        category: { type: string, maxLength: 120 }
+        sortOrder: { type: integer, minimum: 0, maximum: 32767 }
+    TagCatalog:
+      type: object
+      additionalProperties: false
+      required: [version, items]
+      properties:
+        version: { type: string, maxLength: 32 }
+        items: { type: array, minItems: 180, maxItems: 180, items: { $ref: '#/components/schemas/Tag' } }
+    PersonSearchItem:
+      type: object
+      additionalProperties: false
+      required: [accountId, fullName, formalRole, tagIds]
+      properties:
+        accountId: { $ref: '#/components/schemas/Uuid' }
+        fullName: { type: string, maxLength: 200 }
+        formalRole: { $ref: '#/components/schemas/FormalRole' }
+        specialization: { type: string, maxLength: 200 }
+        institute: { type: string, maxLength: 200 }
+        department: { type: string, maxLength: 200 }
+        company: { type: string, maxLength: 200 }
+        avatarMediaId: { $ref: '#/components/schemas/Uuid' }
+        tagIds: { type: array, maxItems: 180, items: { $ref: '#/components/schemas/Uuid' } }
+    PeopleSearchPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/PersonSearchItem' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
+    UploadCreate:
+      type: object
+      additionalProperties: false
+      required: [contentScope, ownerType, ownerId, mimeType, sizeBytes]
+      properties:
+        contentScope: { type: string, enum: [private_message, public_content] }
+        ownerType: { type: string, enum: [profile, resume, team, opportunity, event, message_draft] }
+        ownerId: { $ref: '#/components/schemas/Uuid' }
+        mimeType: { type: string, enum: [image/jpeg, image/png, image/webp] }
+        sizeBytes: { type: integer, minimum: 1, maximum: 5242880 }
+    UploadSession:
+      type: object
+      additionalProperties: false
+      required: [id, contentScope, state, expiresAt]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        contentScope: { type: string, enum: [private_message, public_content] }
+        state: { type: string, enum: [created, processing, ready, moderation_pending, approved, rejected, failed, expired, consumed] }
+        uploadUrl: { type: string, format: uri, maxLength: 4096 }
+        uploadHeaders: { type: object, additionalProperties: { type: string } }
+        mediaId: { $ref: '#/components/schemas/Uuid' }
+        expiresAt: { type: string, format: date-time }
+        failureCode: { type: string, maxLength: 100 }
+    DownloadUrl:
+      type: object
+      additionalProperties: false
+      required: [url, expiresAt]
+      properties:
+        url: { type: string, format: uri, maxLength: 4096 }
+        expiresAt: { type: string, format: date-time }
+    OpportunityType:
+      type: string
+      enum: [hackathon, research_project, part_time_job, internship, olympiad, conference, volunteer_project, startup, competition, meetup, vacancy, educational_project, engineering_competition, case_championship, lecture, seminar, workshop, school_intensive, grant_program, accelerator, mentorship_program, career_event, other]
+    OpportunityState: { type: string, enum: [draft, pending, published, inactive, revision_required, deleting] }
+    OpportunityInput:
+      type: object
+      additionalProperties: false
+      required: [authorKind, type, title, description, contact, coverMediaId, tagIds]
+      properties:
+        authorKind: { $ref: '#/components/schemas/AuthorKind' }
+        teamId: { $ref: '#/components/schemas/Uuid' }
+        type: { $ref: '#/components/schemas/OpportunityType' }
+        customTypeName: { type: string, minLength: 1, maxLength: 80 }
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, minLength: 1, maxLength: 5000 }
+        contact: { type: string, minLength: 1, maxLength: 500 }
+        coverMediaId: { $ref: '#/components/schemas/Uuid' }
+        tagIds: { type: array, minItems: 1, maxItems: 10, uniqueItems: true, items: { $ref: '#/components/schemas/Uuid' } }
+    Opportunity:
+      type: object
+      additionalProperties: false
+      required: [id, authorKind, authorId, state, editLocked, rowVersion, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        authorKind: { $ref: '#/components/schemas/AuthorKind' }
+        authorId: { $ref: '#/components/schemas/Uuid' }
+        state: { $ref: '#/components/schemas/OpportunityState' }
+        published: { $ref: '#/components/schemas/OpportunityInput' }
+        pending: { $ref: '#/components/schemas/OpportunityInput' }
+        editLocked: { type: boolean }
+        moderation: { $ref: '#/components/schemas/ModerationStatus' }
+        publishedAt: { type: string, format: date-time }
+        rowVersion: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    OpportunitySearchItem:
+      type: object
+      additionalProperties: false
+      required: [id, authorKind, authorId, type, title, coverMediaId, tagIds, publishedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        authorKind: { $ref: '#/components/schemas/AuthorKind' }
+        authorId: { $ref: '#/components/schemas/Uuid' }
+        type: { $ref: '#/components/schemas/OpportunityType' }
+        customTypeName: { type: string, maxLength: 80 }
+        title: { type: string, maxLength: 200 }
+        coverMediaId: { $ref: '#/components/schemas/Uuid' }
+        tagIds: { type: array, maxItems: 10, items: { $ref: '#/components/schemas/Uuid' } }
+        publishedAt: { type: string, format: date-time }
+    OpportunityPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Opportunity' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
+    OpportunitySearchPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/OpportunitySearchItem' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
+    ApplicationCreate:
+      type: object
+      additionalProperties: false
+      required: [resumeId]
+      properties:
+        resumeId: { $ref: '#/components/schemas/Uuid' }
+    ApplicationDecision:
+      type: object
+      additionalProperties: false
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [accepted, rejected] }
+    Application:
+      type: object
+      additionalProperties: false
+      required: [id, opportunityId, candidateAccountId, recipientKind, recipientId, status, conversationStatus, rowVersion, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        opportunityId: { $ref: '#/components/schemas/Uuid' }
+        candidateAccountId: { $ref: '#/components/schemas/Uuid' }
+        recipientKind: { $ref: '#/components/schemas/AuthorKind' }
+        recipientId: { $ref: '#/components/schemas/Uuid' }
+        status: { type: string, enum: [pending, accepted, rejected] }
+        eligibleAgainAt: { type: string, format: date-time }
+        decidedAt: { type: string, format: date-time }
+        conversationStatus: { type: string, enum: [not_requested, pending, ready, failed] }
+        conversationId: { $ref: '#/components/schemas/Uuid' }
+        resumeSnapshot: { $ref: '#/components/schemas/ResumeSnapshot' }
+        rowVersion: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+    ResumeSnapshot:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, capturedAt, resume]
+      properties:
+        schemaVersion: { type: integer, minimum: 1 }
+        capturedAt: { type: string, format: date-time }
+        resume: { $ref: '#/components/schemas/PublicResume' }
+    ApplicationPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Application' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
+    TeamInput:
+      type: object
+      additionalProperties: false
+      required: [name, about, projects, tagIds]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        about: { type: string, maxLength: 3000 }
+        projects: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/Project' } }
+        tagIds: { type: array, maxItems: 180, uniqueItems: true, items: { $ref: '#/components/schemas/Uuid' } }
+        avatarMediaId: { $ref: '#/components/schemas/Uuid' }
+    Team:
+      type: object
+      additionalProperties: false
+      required: [id, leaderAccountId, state, editLocked, rowVersion, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        leaderAccountId: { $ref: '#/components/schemas/Uuid' }
+        state: { type: string, enum: [draft, pending, active, revision_required, deleting] }
+        published: { $ref: '#/components/schemas/TeamInput' }
+        pending: { $ref: '#/components/schemas/TeamInput' }
+        editLocked: { type: boolean }
+        moderation: { $ref: '#/components/schemas/ModerationStatus' }
+        rowVersion: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    TeamPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Team' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
+    TeamMember:
+      type: object
+      additionalProperties: false
+      required: [accountId, role, joinedAt]
+      properties:
+        accountId: { $ref: '#/components/schemas/Uuid' }
+        role: { type: string, enum: [leader, member] }
+        joinedAt: { type: string, format: date-time }
+        profile: { $ref: '#/components/schemas/PersonSearchItem' }
+    TeamMemberPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/TeamMember' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
+    JoinRequestCreate:
+      type: object
+      additionalProperties: false
+      required: [resumeId, contribution]
+      properties:
+        resumeId: { $ref: '#/components/schemas/Uuid' }
+        contribution: { type: string, minLength: 1, maxLength: 1000 }
+    JoinRequestDecision:
+      type: object
+      additionalProperties: false
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [approved, rejected] }
+    JoinRequest:
+      type: object
+      additionalProperties: false
+      required: [id, teamId, applicantAccountId, contribution, status, resumeSnapshot, rowVersion, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        teamId: { $ref: '#/components/schemas/Uuid' }
+        applicantAccountId: { $ref: '#/components/schemas/Uuid' }
+        contribution: { type: string, maxLength: 1000 }
+        status: { type: string, enum: [pending, approved, rejected, withdrawn] }
+        eligibleAgainAt: { type: string, format: date-time }
+        resumeSnapshot: { $ref: '#/components/schemas/ResumeSnapshot' }
+        rowVersion: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+    JoinRequestPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/JoinRequest' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
+    TeamInvitationCreate:
+      type: object
+      additionalProperties: false
+      required: [accountId]
+      properties:
+        accountId: { $ref: '#/components/schemas/Uuid' }
+    InvitationDecision:
+      type: object
+      additionalProperties: false
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [accepted, rejected] }
+    TeamInvitation:
+      type: object
+      additionalProperties: false
+      required: [id, teamId, inviteeAccountId, status, rowVersion, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        teamId: { $ref: '#/components/schemas/Uuid' }
+        inviteeAccountId: { $ref: '#/components/schemas/Uuid' }
+        status: { type: string, enum: [pending, accepted, rejected, revoked] }
+        rowVersion: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+    TeamInvitationPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/TeamInvitation' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
+    Subscriber:
+      type: object
+      additionalProperties: false
+      required: [accountId, subscribedAt, profile]
+      properties:
+        accountId: { $ref: '#/components/schemas/Uuid' }
+        subscribedAt: { type: string, format: date-time }
+        profile: { $ref: '#/components/schemas/PersonSearchItem' }
+    SubscriberPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Subscriber' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
+    BlockInput:
+      type: object
+      additionalProperties: false
+      properties:
+        reasonCode: { type: string, pattern: '^[a-z0-9_]+$', maxLength: 64 }
+    BlockedAccount:
+      type: object
+      additionalProperties: false
+      required: [accountId, createdAt]
+      properties:
+        accountId: { $ref: '#/components/schemas/Uuid' }
+        createdAt: { type: string, format: date-time }
+        reasonCode: { type: string, maxLength: 64 }
+        profile: { $ref: '#/components/schemas/PersonSearchItem' }
+    BlockedAccountPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/BlockedAccount' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
+    EventInput:
+      type: object
+      additionalProperties: false
+      required: [title, description, coverMediaId, tagIds, startsAt, timezone]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, minLength: 1, maxLength: 5000 }
+        coverMediaId: { $ref: '#/components/schemas/Uuid' }
+        tagIds: { type: array, uniqueItems: true, maxItems: 180, items: { $ref: '#/components/schemas/Uuid' } }
+        startsAt: { type: string, format: date-time }
+        timezone: { $ref: '#/components/schemas/TimeZone' }
+    TeamEvent:
+      type: object
+      additionalProperties: false
+      required: [id, teamId, state, startsAt, timezone, editLocked, rowVersion, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        teamId: { $ref: '#/components/schemas/Uuid' }
+        state: { type: string, enum: [draft, pending, scheduled, cancelled, revision_required, deleting] }
+        startsAt: { type: string, format: date-time }
+        timezone: { $ref: '#/components/schemas/TimeZone' }
+        published: { $ref: '#/components/schemas/EventInput' }
+        pending: { $ref: '#/components/schemas/EventInput' }
+        editLocked: { type: boolean }
+        moderation: { $ref: '#/components/schemas/ModerationStatus' }
+        cancelledAt: { type: string, format: date-time }
+        rowVersion: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CalendarEventPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/TeamEvent' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
+    DeletionStatus:
+      type: object
+      additionalProperties: false
+      required: [workflowId, state, deadlineAt]
+      properties:
+        workflowId: { $ref: '#/components/schemas/Uuid' }
+        state: { type: string, enum: [waiting_grace, running, completed, cancelled, failed] }
+        irreversibleAt: { type: string, format: date-time }
+        deadlineAt: { type: string, format: date-time }
+    DirectConversationCreate:
+      type: object
+      additionalProperties: false
+      required: [otherAccountId]
+      properties:
+        otherAccountId: { $ref: '#/components/schemas/Uuid' }
+    ConversationKind: { type: string, enum: [direct, personal_application, team_application] }
+    Conversation:
+      type: object
+      additionalProperties: false
+      required: [id, kind, participants, state, unreadCount, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        kind: { $ref: '#/components/schemas/ConversationKind' }
+        state: { type: string, enum: [active, deleting] }
+        participants:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items: { $ref: '#/components/schemas/ConversationParticipant' }
+        opportunityId: { $ref: '#/components/schemas/Uuid' }
+        unreadCount: { type: integer, minimum: 0 }
+        lastMessageAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+    ConversationParticipant:
+      type: object
+      additionalProperties: false
+      required: [accountId, role]
+      properties:
+        accountId: { $ref: '#/components/schemas/Uuid' }
+        role: { type: string, enum: [party, team_leader] }
+        profile: { $ref: '#/components/schemas/PersonSearchItem' }
+    ConversationPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Conversation' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
+    MessageCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        body: { type: string, maxLength: 5000 }
+        mediaIds: { type: array, maxItems: 10, uniqueItems: true, items: { $ref: '#/components/schemas/Uuid' } }
+      anyOf:
+        - required: [body]
+        - required: [mediaIds]
+    MessageUpdate:
+      type: object
+      additionalProperties: false
+      required: [body]
+      properties:
+        body: { type: string, minLength: 1, maxLength: 5000 }
+    MessageAttachment:
+      type: object
+      additionalProperties: false
+      required: [position, state]
+      properties:
+        position: { type: integer, minimum: 1, maximum: 10 }
+        mediaId: { $ref: '#/components/schemas/Uuid' }
+        state: { type: string, enum: [available, no_longer_stored] }
+    Message:
+      type: object
+      additionalProperties: false
+      required: [id, conversationId, senderAccountId, version, attachments, edited, deleted, moderationState, rowVersion, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        conversationId: { $ref: '#/components/schemas/Uuid' }
+        senderAccountId: { $ref: '#/components/schemas/Uuid' }
+        body: { type: string, maxLength: 5000 }
+        version: { type: integer, minimum: 1 }
+        attachments: { type: array, maxItems: 10, items: { $ref: '#/components/schemas/MessageAttachment' } }
+        edited: { type: boolean }
+        deleted: { type: boolean }
+        moderationState: { type: string, enum: [normal, hidden, revision_required, manual_review_pending] }
+        readAt: { type: string, format: date-time }
+        editedAt: { type: string, format: date-time }
+        deletedAt: { type: string, format: date-time }
+        rowVersion: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+    MessagePage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Message' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
+    MarkRead:
+      type: object
+      additionalProperties: false
+      required: [lastReadMessageId]
+      properties:
+        lastReadMessageId: { $ref: '#/components/schemas/Uuid' }
+    Notification:
+      type: object
+      additionalProperties: false
+      required: [id, type, payload, read, rowVersion, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        type: { type: string, maxLength: 80 }
+        resourceType: { type: string, maxLength: 64 }
+        resourceId: { $ref: '#/components/schemas/Uuid' }
+        payload:
+          type: object
+          additionalProperties: true
+          description: Minimal non-sensitive navigation metadata only.
+        read: { type: boolean }
+        readAt: { type: string, format: date-time }
+        rowVersion: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+    NotificationPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Notification' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
+    NotificationUpdate:
+      type: object
+      additionalProperties: false
+      required: [read]
+      properties:
+        read: { type: boolean, const: true }
+    ReadAllNotifications:
+      type: object
+      additionalProperties: false
+      properties:
+        before: { type: string, format: date-time }
+    UpdatedCount:
+      type: object
+      additionalProperties: false
+      required: [updatedCount]
+      properties:
+        updatedCount: { type: integer, minimum: 0 }
+    ReportTargetType: { type: string, enum: [profile, resume, opportunity, team, event, message] }
+    ReportKind: { type: string, enum: [content, impersonation] }
+    ReportStatus: { type: string, enum: [accepted, in_review, confirmed, rejected] }
+    ReportCreate:
+      type: object
+      additionalProperties: false
+      required: [targetType, targetId, kind, reason]
+      properties:
+        targetType: { $ref: '#/components/schemas/ReportTargetType' }
+        targetId: { $ref: '#/components/schemas/Uuid' }
+        kind: { $ref: '#/components/schemas/ReportKind' }
+        reason: { type: string, minLength: 1, maxLength: 2000 }
+    ReportDecision:
+      type: object
+      additionalProperties: false
+      required: [decision, reason]
+      properties:
+        decision: { type: string, enum: [confirmed, rejected] }
+        reason: { type: string, minLength: 1, maxLength: 2000 }
+    Report:
+      type: object
+      additionalProperties: false
+      required: [id, targetType, targetId, kind, status, priority, deadlineAt, rowVersion, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        targetType: { $ref: '#/components/schemas/ReportTargetType' }
+        targetId: { $ref: '#/components/schemas/Uuid' }
+        kind: { $ref: '#/components/schemas/ReportKind' }
+        status: { $ref: '#/components/schemas/ReportStatus' }
+        priority: { type: integer, minimum: 0, maximum: 32767 }
+        reason: { type: string, maxLength: 2000 }
+        resolutionReason: { type: string, maxLength: 2000 }
+        assigneeAccountId: { $ref: '#/components/schemas/Uuid' }
+        deadlineAt: { type: string, format: date-time }
+        resolvedAt: { type: string, format: date-time }
+        rowVersion: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+    ReportPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Report' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
+    Evidence:
+      type: object
+      additionalProperties: false
+      required: [reportId, state, items]
+      properties:
+        reportId: { $ref: '#/components/schemas/Uuid' }
+        state: { type: string, enum: [available, partially_available, unavailable] }
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [kind, state]
+            properties:
+              kind: { type: string, enum: [message_revision, attachment] }
+              state: { type: string, enum: [available, unavailable] }
+              text: { type: string, maxLength: 5000 }
+              downloadUrl: { type: string, format: uri, maxLength: 4096 }
+              expiresAt: { type: string, format: date-time }
+    AppealStatus: { type: string, enum: [pending, in_review, upheld, overturned] }
+    AppealCreate:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 1, maxLength: 2000 }
+    AppealDecision:
+      type: object
+      additionalProperties: false
+      required: [decision, reason]
+      properties:
+        decision: { type: string, enum: [upheld, overturned] }
+        reason: { type: string, minLength: 1, maxLength: 2000 }
+    Appeal:
+      type: object
+      additionalProperties: false
+      required: [id, decisionId, status, priority, deadlineAt, rowVersion, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        decisionId: { $ref: '#/components/schemas/Uuid' }
+        status: { $ref: '#/components/schemas/AppealStatus' }
+        priority: { type: integer, minimum: 0, maximum: 32767 }
+        reason: { type: string, maxLength: 2000 }
+        resolutionReason: { type: string, maxLength: 2000 }
+        assigneeAccountId: { $ref: '#/components/schemas/Uuid' }
+        deadlineAt: { type: string, format: date-time }
+        resolvedAt: { type: string, format: date-time }
+        rowVersion: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+    AppealPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Appeal' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
+    ModeratedContentType: { type: string, enum: [profile, resume, team, opportunity, event, message_revision] }
+    ManualReviewStatus: { type: string, enum: [pending, in_review, approved, returned] }
+    ManualReviewDecision:
+      type: object
+      additionalProperties: false
+      required: [decision, reason]
+      properties:
+        decision: { type: string, enum: [approved, returned] }
+        reason: { type: string, minLength: 1, maxLength: 2000 }
+    ManualReview:
+      type: object
+      additionalProperties: false
+      required: [id, contentType, contentVersionId, status, priority, deadlineAt, rowVersion, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        contentType: { $ref: '#/components/schemas/ModeratedContentType' }
+        contentVersionId: { $ref: '#/components/schemas/Uuid' }
+        status: { $ref: '#/components/schemas/ManualReviewStatus' }
+        priority: { type: integer, minimum: 0, maximum: 32767 }
+        deadlineAt: { type: string, format: date-time }
+        assigneeAccountId: { $ref: '#/components/schemas/Uuid' }
+        resolvedAt: { type: string, format: date-time }
+        rowVersion: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+    ManualReviewPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ManualReview' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
+    PrivacyRequestType: { type: string, enum: [export, correction, restriction, deletion] }
+    PrivacyRequestStatus: { type: string, enum: [received, in_progress, completed, cancelled, failed] }
+    PrivacyRequestCreate:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: { $ref: '#/components/schemas/PrivacyRequestType' }
+        description: { type: string, minLength: 1, maxLength: 2000 }
+      description: description is required for correction.
+    PrivacyRequest:
+      type: object
+      additionalProperties: false
+      required: [id, type, status, requestedAt, deadlineAt, rowVersion]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        type: { $ref: '#/components/schemas/PrivacyRequestType' }
+        status: { $ref: '#/components/schemas/PrivacyRequestStatus' }
+        requestedAt: { type: string, format: date-time }
+        irreversibleAt: { type: string, format: date-time }
+        deadlineAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time }
+        cancelledAt: { type: string, format: date-time }
+        resultAvailable: { type: boolean }
+        rowVersion: { type: integer, minimum: 1 }
+    PrivacyRequestPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/PrivacyRequest' } }
+        page: { $ref: '#/components/schemas/PageInfo' }

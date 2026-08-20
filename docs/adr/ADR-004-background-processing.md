@@ -1,28 +1,70 @@
 # ADR-004: Background processing and delivery semantics
 
-Статус: принято.
-Дата: 19.08.2026.
+Status: Accepted
 
-## Контекст
+## Context
 
-Email, уведомления, создание контекстного чата, media, search projection и удаление не должны расширять пользовательскую транзакцию. При этом подтверждённое изменение нельзя потерять при сбое Redis или worker.
+Email, уведомления, создание контекстного чата, media processing, moderation, search projection и удаление не должны расширять пользовательскую транзакцию. При этом подтверждённое изменение нельзя потерять при сбое Redis, worker или внешнего provider. Задачи требуют delayed retries, различных resource profiles и безопасного replay.
 
-## Решение
+Механизм доставки затрагивает все bounded contexts и формирует семантику отказов. Поздняя замена потребует мигрировать pending jobs, deduplication state, monitoring и operational runbooks.
 
-Предметная транзакция записывает PostgreSQL outbox. Для каждого consumer создаётся delivery record. Dispatcher публикует BullMQ job с `(eventId, consumer)` как job ID; consumer сохраняет inbox marker в одной транзакции с эффектом. Незавершённые deliveries повторно публикуются reconciliation job. Семантика — at-least-once, handlers идемпотентны.
+## Decision
 
-## Альтернативы
+Предметная транзакция записывает событие в PostgreSQL transactional outbox. Для каждого consumer создаётся delivery record. Dispatcher публикует BullMQ job с `(eventId, consumer)` как `jobId`; consumer сохраняет inbox marker в одной транзакции со своим эффектом. Reconciliation job повторно публикует незавершённые deliveries.
 
-- Только BullMQ: создаёт dual-write между PostgreSQL и Redis.
-- Kafka/RabbitMQ: избыточны при 30 RPS.
-- Синхронные side effects: связывают доступность продукта с внешними провайдерами.
+Семантика доставки — at-least-once, поэтому handlers идемпотентны. Redis/BullMQ отвечает за scheduling, concurrency и retries, но не является источником истины: незавершённая работа восстанавливается из PostgreSQL. Очереди разделяются только при различающихся retry или resource profiles. API и worker запускаются отдельными process roles из одного release artifact.
 
-## Последствия
+## Alternatives considered
 
-- Нужны outbox/inbox retention, DLQ, lag metrics и manual replay.
-- Redis не является источником истины: потерянная job восстанавливается из delivery record.
-- Очереди разделяются только при разных retry/resource profiles.
+### Alternative A: Записывать только BullMQ job
 
-## Триггер пересмотра
+Pros:
 
-Outbox polling становится измеряемым bottleneck либо появляются независимые сервисы с большим event throughput.
+- меньше таблиц и проще happy path;
+- минимальная задержка постановки задачи.
+
+Cons:
+
+- возникает dual-write между PostgreSQL и Redis;
+- commit предметного действия может состояться без job;
+- потеря Redis способна необратимо потерять side effect.
+
+### Alternative B: Kafka или RabbitMQ как event broker
+
+Pros:
+
+- развитые streaming/routing возможности;
+- удобнее независимым сервисам с высоким throughput.
+
+Cons:
+
+- дополнительная сложная stateful платформа;
+- transactional boundary с PostgreSQL всё равно требует outbox;
+- объём 30 RPS не оправдывает эксплуатационную стоимость.
+
+## Consequences
+
+Positive:
+
+- business commit не зависит от Redis и внешних providers;
+- потерянные или повторные jobs восстанавливаются безопасно;
+- workers масштабируются независимо от API.
+
+Negative:
+
+- нужно хранить и очищать outbox, delivery и inbox records;
+- at-least-once требует идемпотентности каждого consumer;
+- reconciliation и manual replay усложняют эксплуатацию.
+
+## Risks
+
+- Ошибка consumer до записи inbox marker может многократно повторить внешний эффект.
+- Рост outbox lag или DLQ может быть незаметен без age-based alerts.
+- Неправильное разделение очередей может вызвать starvation критических jobs.
+
+## Conditions for revisiting this decision
+
+- outbox polling становится измеряемым bottleneck после batch/index tuning;
+- появляются независимо выпускаемые services с большим event throughput;
+- BullMQ не обеспечивает обязательные ordering, retention или routing guarantees;
+- operational cost reconciliation превышает выгоду текущей схемы.

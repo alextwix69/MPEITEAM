@@ -1,30 +1,72 @@
 # ADR-007: Media boundary and report evidence
 
-Статус: принято.
-Дата: 19.08.2026.
+Status: Accepted
 
-## Контекст
+## Context
 
-Медиа должно пройти техническую sanitization, публичное изображение — дополнительную автомодерацию. Модератор должен рассмотреть жалобу на сообщение, но текст и media запрещено помещать в audit/logs. Чат может быть физически удалён в любой момент.
+Медиа должно пройти sanitization, а публичное изображение — дополнительную автомодерацию. Модератору нужно рассмотреть жалобу на сообщение, но текст и media запрещено помещать в audit и operational logs. Чат может быть физически удалён в любой момент, после чего его содержимое нельзя восстанавливать из backup ради модерации.
 
-## Решение
+Решение определяет data lifecycle, privacy boundary и доказательную базу жалоб. Позднее изменение retention или создание скрытых копий затронет пользовательские обещания, политику обработки данных и процесс удаления.
 
-Upload session имеет неизменяемый scope `private_message` или `public_content`. Оба проходят quarantine, MIME/magic-byte validation, malware scan, EXIF removal и resize. Только `public_content` переходит к `ContentModerator`; провайдер получает short-lived scoped URL на sanitized object.
+## Decision
 
-При создании жалобы `Messaging` атомарно фиксирует immutable revision текущего текста только для оспариваемого сообщения; обычные редактирования историю не создают. `ReportEvidence` ссылается на эту revision и attachment, существовавшие в момент жалобы, а не копирует содержимое в audit. `evidence.view` выдаёт назначенному модератору доступ только из открытой жалобы; audit содержит metadata доступа. После физического удаления message/chat reported revision и attachments удаляются, evidence становится `unavailable`; извлечение из backup запрещено.
+Хранить media в private S3-compatible storage в РФ, а metadata и связи — в PostgreSQL. Upload session имеет неизменяемый scope `private_message` или `public_content`. Оба scope проходят quarantine, magic-byte/MIME validation, malware scan, EXIF removal и resize. Только `public_content` передаётся `ContentModerator`; provider получает short-lived URL на один sanitized object.
 
-## Альтернативы
+При создании жалобы `Messaging` атомарно фиксирует immutable revision текущего текста только для оспариваемого сообщения. `ReportEvidence` ссылается на эту revision и существовавшие attachments, не копируя содержимое в audit. `evidence.view` доступен назначенному модератору только из открытой жалобы; audit хранит лишь metadata доступа.
 
-- Копировать snapshot в audit: нарушает требования к журналам.
-- Хранить отдельный encrypted snapshot после удаления: улучшает рассмотрение, но меняет FR-124 и требует явного правового основания/retention.
-- Не давать модератору содержимое: делает жалобу на сообщение практически нерассматриваемой.
+После физического удаления message/chat reported revision и attachments удаляются, evidence становится `unavailable`; извлечение из backup запрещено. Отдельный post-deletion snapshot без предварительного product/legal решения не создаётся.
 
-## Последствия
+## Alternatives considered
 
-- Жалоба может остаться без содержимого, если чат удалён до рассмотрения.
-- Любой будущий snapshot требует предварительного изменения product-spec, политики обработки и этого ADR.
-- Архитектурные и security tests подтверждают отсутствие пути private media к provider.
+### Alternative A: Копировать evidence snapshot в audit
 
-## Триггер пересмотра
+Pros:
 
-Product/legal review утверждает основание и срок хранения snapshot evidence после удаления либо практика показывает неприемлемую долю `unavailable` жалоб.
+- жалоба остаётся рассматриваемой после удаления чата;
+- единое место для истории модерации.
+
+Cons:
+
+- audit начинает хранить текст переписки и media;
+- нарушаются privacy и deletion boundaries;
+- расширяется круг доступа к чувствительным данным.
+
+### Alternative B: Хранить отдельный encrypted snapshot после удаления
+
+Pros:
+
+- содержимое доступно только узкому moderation workflow;
+- можно установить отдельный retention и access audit.
+
+Cons:
+
+- меняется обещание физического удаления;
+- требуется отдельное правовое основание, срок и пользовательская политика;
+- появляется ещё одно хранилище чувствительных копий.
+
+## Consequences
+
+Positive:
+
+- опасные и несанитизированные файлы не доставляются пользователям;
+- private media не имеет пути к moderation provider;
+- audit не превращается в архив переписки.
+
+Negative:
+
+- жалоба может остаться без содержимого при удалении чата до рассмотрения;
+- upload и public-media state machines сложнее прямой загрузки;
+- любой post-deletion evidence retention требует отдельного продуктового решения.
+
+## Risks
+
+- Ошибка `contentScope` или adapter dependency может раскрыть private media provider.
+- Signed URL с чрезмерным сроком или scope расширит доступ.
+- Tombstone job может оставить orphaned object либо удалить объект раньше фиксации жалобы.
+
+## Conditions for revisiting this decision
+
+- product owner и юрист утверждают основание, точный retention, доступ и пользовательскую политику для post-deletion evidence;
+- доля `unavailable` жалоб становится неприемлемой и подтверждена метриками;
+- S3 provider не обеспечивает требуемые private endpoints, lifecycle или data residency;
+- требования к типам или объёму media существенно меняются.

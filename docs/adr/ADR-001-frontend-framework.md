@@ -1,28 +1,70 @@
 # ADR-001: Frontend framework
 
-Статус: принято.
-Дата: 19.08.2026.
+Status: Accepted
 
-## Контекст
+## Context
 
-MVP имеет один закрытый web client, русскоязычный адаптивный UI и realtime-подсказки. SEO не является основной ценностью. Команде нужен распространённый TypeScript-стек без отдельного BFF и без двух независимых моделей клиентского состояния.
+MVP имеет один закрытый адаптивный web client. SEO не является основной ценностью, но нужны маршрутизация, server-rendered shell, code splitting, формы, realtime-подсказки и единая TypeScript-модель контрактов. Второй клиент и отдельная frontend-команда отсутствуют.
 
-## Решение
+Выбор framework и модели состояния влияет на структуру всех пользовательских сценариев, границу frontend/backend и стоимость появления новых клиентов. Поздняя замена потребует переписать маршруты, формы, data fetching и значительную часть тестов.
 
-Использовать Next.js App Router, React и TypeScript strict. TanStack Query владеет server state, React Hook Form и Zod — формами, Tailwind CSS и shadcn/ui — presentation layer. REST `/api/v1` является источником истины; Socket.IO только инвалидирует/обновляет query state. Глобальный Redux-store и отдельный BFF не вводятся.
+## Decision
 
-## Альтернативы
+Использовать Next.js App Router, React и TypeScript strict как единый responsive web client. TanStack Query владеет server state, React Hook Form и Zod — формами, Tailwind CSS и shadcn/ui — presentation layer.
 
-- SPA на Vite: проще runtime, но отклоняется от утверждённого baseline и теряет единый routing/rendering framework.
-- GraphQL/BFF: оправданы несколькими разнородными клиентами, которых в MVP нет.
-- Redux: не нужен при разделении server state и локального UI state.
+Frontend обращается к versioned REST API через same-origin reverse proxy согласно ADR-015. REST остаётся источником истины, а Socket.IO только сообщает об изменениях и инициирует invalidation/refetch. Отдельный BFF, GraphQL и глобальный Redux-store в MVP не вводятся. Server Components не содержат бизнес-правил и не образуют второй backend.
 
-## Последствия
+## Alternatives considered
 
-- Frontend зависит от стабильности REST DTO; ADR-008 задаёт compatibility gate.
-- Бизнес-правила и авторизация не переносятся в Server Components.
-- Основные journeys проверяются Playwright на desktop/mobile, с клавиатурой и поддерживаемыми браузерами.
+### Alternative A: SPA на Vite
 
-## Триггер пересмотра
+Pros:
 
-Появление второго независимого клиента, доказанная необходимость BFF или систематическая невозможность собрать экран без чрезмерного числа API-запросов.
+- проще runtime и hosting;
+- полная явность client-side rendering.
+
+Cons:
+
+- придётся отдельно собирать routing, shell rendering и conventions;
+- слабее соответствие принятому TypeScript baseline проекта;
+- переход не даёт измеримой продуктовой выгоды для одного клиента.
+
+### Alternative B: BFF или GraphQL с глобальным store
+
+Pros:
+
+- можно агрегировать данные под сложные экраны;
+- удобнее обслуживать несколько неодинаковых клиентов.
+
+Cons:
+
+- появляется второй backend-контур и дополнительный контракт;
+- возрастает риск двух конкурирующих моделей server state;
+- у MVP нет нескольких клиентов, оправдывающих эту стоимость.
+
+## Consequences
+
+Positive:
+
+- один стек и одна модель server state для desktop и mobile;
+- realtime не дублирует источник истины и безопасно восстанавливается через REST;
+- routing, rendering и code splitting имеют единые conventions.
+
+Negative:
+
+- frontend тесно зависит от REST DTO и compatibility discipline;
+- сложные экраны могут потребовать агрегирующих REST endpoints;
+- framework-specific App Router conventions увеличивают стоимость будущей миграции.
+
+## Risks
+
+- Бизнес-правила могут незаметно переместиться в Server Components.
+- Неконтролируемое локальное состояние может повторно создать глобальный store без явного решения.
+- Breaking REST change способен одновременно нарушить несколько feature areas.
+
+## Conditions for revisiting this decision
+
+- появляется второй независимый клиент с существенно иными потребностями;
+- измерения показывают систематический request fan-out, который нельзя устранить агрегирующими REST endpoints;
+- Next.js ограничивает обязательные требования по безопасности, доступности или эксплуатации;
+- стоимость поддержки локального frontend-стека становится выше миграции.
