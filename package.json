@@ -1,0 +1,52 @@
+{
+  "name": "komanda-mpei",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev --parallel",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "typecheck": "turbo run typecheck",
+    "test": "pnpm test:unit",
+    "test:unit": "turbo run test:unit && vitest run --config vitest.config.ts",
+    "test:integration": "pnpm --filter @komanda/backend test:integration",
+    "test:e2e": "playwright test",
+    "openapi:lint": "redocly lint api/openapi.yaml && tsx scripts/check-openapi.ts",
+    "openapi:generate": "openapi-typescript api/openapi.yaml -o frontend/src/lib/api/generated.ts && prettier --write frontend/src/lib/api/generated.ts",
+    "openapi:check": "pnpm openapi:generate && git diff --exit-code -- frontend/src/lib/api/generated.ts",
+    "db:migrate": "pnpm --filter @komanda/backend db:migrate",
+    "db:migrate:test": "tsx scripts/migrate-test-database.ts",
+    "infra:up": "docker compose up -d postgres redis minio minio-setup",
+    "infra:down": "docker compose down",
+    "local:up": "pnpm install --frozen-lockfile && docker compose up --build",
+    "stack:up": "docker compose up --build",
+    "stack:down": "docker compose down",
+    "smoke": "node tests/smoke/check-stack.mjs",
+    "smoke:degraded": "node tests/smoke/check-worker-degraded.mjs",
+    "smoke:wait": "node tests/smoke/wait-for-stack.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@next/eslint-plugin-next": "16.3.4",
+    "@playwright/test": "1.62.1",
+    "@redocly/cli": "2.49.1",
+    "@types/node": "26.4.0",
+    "eslint": "10.9.1",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "17.12.0",
+    "openapi-typescript": "7.13.0",
+    "prettier": "3.9.6",
+    "tsx": "4.21.0",
+    "turbo": "2.10.12",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.69.0",
+    "vitest": "4.1.11",
+    "yaml": "2.9.0"
+  }
+}

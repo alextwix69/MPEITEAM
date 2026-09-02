@@ -1,0 +1,44 @@
+{
+  "name": "@komanda/backend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "pnpm prisma:generate && tsc -p tsconfig.build.json",
+    "dev": "concurrently -k \"pnpm dev:api\" \"pnpm dev:worker\"",
+    "dev:api": "tsx watch src/api/main.ts",
+    "dev:worker": "tsx watch src/worker/main.ts",
+    "start:api": "node dist/api/main.js",
+    "start:worker": "node dist/worker/main.js",
+    "typecheck": "pnpm prisma:generate && tsc --noEmit -p tsconfig.json",
+    "test:unit": "vitest run --config vitest.config.ts tests/unit",
+    "test:integration": "tsx ../scripts/migrate-test-database.ts && tsx ../scripts/migrate-test-database.ts && vitest run --config vitest.config.ts tests/integration",
+    "prisma:generate": "prisma generate --schema prisma/schema.prisma",
+    "db:migrate": "prisma migrate deploy --schema prisma/schema.prisma"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1123.0",
+    "@nestjs/common": "12.0.1",
+    "@nestjs/core": "12.0.1",
+    "@nestjs/platform-express": "12.0.1",
+    "@opentelemetry/api": "1.9.1",
+    "@prisma/client": "6.19.0",
+    "ioredis": "5.8.2",
+    "pino": "10.3.1",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2",
+    "uuid": "14.0.2",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@nestjs/testing": "12.0.1",
+    "@types/express": "5.0.6",
+    "@types/node": "26.4.0",
+    "@types/supertest": "7.2.0",
+    "concurrently": "9.2.1",
+    "prisma": "6.19.0",
+    "supertest": "7.2.2",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  }
+}

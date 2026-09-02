@@ -1,0 +1,16 @@
+.git
+.github
+.continue
+.env*
+.next
+.turbo
+**/.next
+**/.turbo
+**/dist
+**/node_modules
+coverage
+docs
+node_modules
+playwright-report
+test-results
+tests

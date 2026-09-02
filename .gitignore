@@ -7,10 +7,14 @@
 
 # Зависимости и результаты сборки
 node_modules/
+*.tsbuildinfo
 dist/
 build/
 .next/
+.turbo/
 coverage/
+playwright-report/
+test-results/
 
 # Python
 __pycache__/
