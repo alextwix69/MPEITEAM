@@ -38,6 +38,8 @@
 
 `Idempotency-Key` обязателен на отмеченных `I:req` command endpoints. Формат — 1–128 printable ASCII characters; рекомендуемый формат UUIDv4. Область ключа: `(account, HTTP method, normalized route)`, TTL — не менее 24 часов.
 
+Для public flow без известного account областью вместо account является keyed HMAC нормализованного subject (например, email); raw email и IP в idempotency record не сохраняются. Если account определяется в ходе команды, используется его account ID. Краткоживущий secret, необходимый для точного replay `Set-Cookie`, хранится только как authenticated encryption envelope в пределах TTL idempotency record.
+
 - первый запрос атомарно сохраняет hash canonical payload и результат вместе с business commit;
 - повтор с тем же key и payload возвращает исходные status/body и `Idempotency-Replayed: true`;
 - тот же key с другим payload — `409 IDEMPOTENCY_KEY_REUSED`;
@@ -112,7 +114,7 @@ Content-Type ошибки — `application/problem+json`. Envelope сохран�
 |---|---|---|---|---|---|
 | `GET /auth/csrf` | `Session`; любая незавершённая сессия | Нет body. | `200 CsrfToken`; `Cache-Control: no-store`. | `AUTH_REQUIRED`. | `—` |
 | `POST /auth/registrations` | `Public`; rate limit IP+email | `RegistrationRequest`: unique normalized email, password 12..128, role; student/teacher требуют `@mpei.ru`; role-shaped profile; четыре отдельных `accepted=true` и актуальные document versions. | `201 RegistrationResult` с `accountState=unverified`; verification email асинхронен. | `EMAIL_ALREADY_REGISTERED`, `EMAIL_DOMAIN_NOT_ALLOWED`, `AGE_CONFIRMATION_REQUIRED`, `CONSENT_REQUIRED`, `CONSENT_VERSION_OUTDATED`. | `I:req` |
-| `POST /auth/email-verifications` | `Public`; одноразовый token | `token` 32..2048. | `200 SessionView`, cookie обновлена; active только после всех consent guards. | `TOKEN_INVALID_OR_EXPIRED`, `CONSENT_EVIDENCE_UNAVAILABLE`. | `I:req` |
+| `POST /auth/email-verifications` | `Public`; одноразовый token | `token` 32..2048. | `200 SessionView`, cookie обновлена; active только после всех consent guards и legal proof именно принятой версии, которая была актуальна при регистрации. Более новая версия документа требует отдельного последующего consent flow и не переписывает прежнее волеизъявление автоматически. | `TOKEN_INVALID_OR_EXPIRED`, `CONSENT_EVIDENCE_UNAVAILABLE`. | `I:req` |
 | `POST /auth/email-verifications/resend` | `Session` (`unverified`) или public email flow; rate limit | Optional `email`; одинаковый внешний результат независимо от существования аккаунта. | `202 OperationAccepted`. | `ALREADY_VERIFIED`; rate limit. | `I:req` |
 | `POST /auth/sessions` | `Public`; rate limit IP+email | Email ≤320, password 1..128. | `200 SessionView`, session+CSRF cookies; `Cache-Control: no-store`. | `INVALID_CREDENTIALS`, `ACCOUNT_DELETED`. | `I:opt` |
 | `DELETE /auth/session` | `Session`, включая `deleting` | CSRF; body отсутствует. | `204`; повторный logout также `204`. | — | `I:—` (HTTP-idempotent) |

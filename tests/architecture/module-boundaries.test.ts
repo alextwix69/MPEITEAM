@@ -30,14 +30,54 @@ describe('bounded-context module boundaries', () => {
     );
   });
 
-  it('keeps current module shells public and free of business stubs', () => {
+  it('rejects provider SDK imports from application and domain layers', () => {
+    const violations = findBoundaryViolations([
+      {
+        path: 'backend/src/modules/files/application/upload.ts',
+        source: "import { S3Client } from '@aws-sdk/client-s3';",
+      },
+    ]);
+
+    expect(violations.map(({ reason }) => reason)).toContain(
+      'Слой application не должен напрямую импортировать provider SDK.',
+    );
+  });
+
+  it('rejects module cycles longer than two edges', () => {
+    const violations = findBoundaryViolations([
+      {
+        path: 'backend/src/modules/identity/index.ts',
+        source: "export * from '../catalog/index';",
+      },
+      {
+        path: 'backend/src/modules/catalog/index.ts',
+        source: "import '../profiles/index';",
+      },
+      {
+        path: 'backend/src/modules/profiles/index.ts',
+        source: "void import('../identity/index');",
+      },
+    ]);
+
+    expect(
+      violations.some(({ reason }) => reason.includes('identity -> catalog -> profiles')),
+    ).toBe(true);
+  });
+
+  it('keeps module entrypoints public and untouched contexts as empty shells', () => {
     const inputs = readModuleSources(repositoryRoot);
     expect(findBoundaryViolations(inputs)).toEqual([]);
-    expect(inputs).toHaveLength(13);
+    const entrypoints = inputs.filter(({ path }) => path.endsWith('/index.ts'));
+    expect(entrypoints).toHaveLength(13);
     expect(
-      inputs.every(
-        ({ path, source }) => path.endsWith('/index.ts') && source.trim() === 'export {};',
-      ),
+      entrypoints
+        .filter(
+          ({ path }) =>
+            !path.includes('/identity/') &&
+            !path.includes('/profiles/') &&
+            !path.includes('/compliance/'),
+        )
+        .every(({ source }) => source.trim() === 'export {};'),
     ).toBe(true);
     expect(readdirSync(resolve(repositoryRoot, 'backend', 'src', 'modules')).sort()).toEqual([
       'catalog',

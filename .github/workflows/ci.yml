@@ -42,6 +42,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: docker compose up -d --wait postgres redis minio
+      - run: docker compose run --rm minio-setup
       - run: pnpm test:integration
       - if: always()
         run: docker compose down --volumes

@@ -481,9 +481,9 @@ Indexes: UNIQUE source workflow — idempotent write; `(subject_token,completed_
 
 ### 16.1 `platform.idempotency_records`
 
-Purpose: API retry deduplication. Fields: `id uuid` PK; `actor_account_id`; `route varchar(160)`; `key varchar(128)`; `request_hash bytea`; `state enum(in_progress,completed,failed)`; `response_status`, `response_ref_type`, `response_ref_id` optional; `expires_at`, timestamps. Same key/different hash conflicts; record/business command complete in one transaction. Lifecycle reserve -> complete/stale reconciliation. Retention route retry horizon, default 24h, never past account hard delete.
+Purpose: API retry deduplication. Fields: `id uuid` PK; `actor_account_id uuid` optional; `public_subject_hash bytea` optional; `route varchar(160)`; `key varchar(128)`; `request_hash bytea`; `state enum(in_progress,completed,failed)`; `response_status`, `response_ref_type`, `response_ref_id`, `response_body jsonb`, `response_secret bytea` optional; `expires_at`, timestamps. Ровно один scope обязателен: account для известного пользователя либо HMAC public subject для public flow без account. `response_secret` содержит только authenticated encryption envelope, необходимый для точного replay краткоживущего Set-Cookie, и очищается вместе с record. Same key/different hash conflicts; record/business command complete in one transaction. Lifecycle reserve -> complete/stale reconciliation. Retention route retry horizon, default 24h, never past account hard delete.
 
-Indexes: UNIQUE `(actor_account_id,route,key)` — exact retry/serialization; `(expires_at,id)` — TTL cleanup. State index unnecessary because reconciliation uses expiry.
+Indexes: partial UNIQUE `(actor_account_id,route,key) WHERE actor_account_id IS NOT NULL` и partial UNIQUE `(public_subject_hash,route,key) WHERE public_subject_hash IS NOT NULL` — exact retry/serialization; `(expires_at,id)` — TTL cleanup. State index unnecessary because reconciliation uses expiry. IP address не является public subject и не хранится в idempotency record.
 
 ### 16.2 `platform.outbox_events`
 

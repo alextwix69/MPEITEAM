@@ -1,4 +1,5 @@
 import { HealthPanel } from '../components/health-panel';
+import Link from 'next/link';
 
 export default function Home() {
   return (
@@ -15,6 +16,12 @@ export default function Home() {
           версиях.
         </p>
         <HealthPanel />
+        <Link
+          className="mt-6 inline-flex rounded-lg bg-[var(--accent)] px-5 py-3 font-semibold text-white"
+          href="/registration"
+        >
+          Зарегистрироваться
+        </Link>
       </section>
     </div>
   );

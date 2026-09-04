@@ -88,7 +88,8 @@ FR-001—FR-005, FR-008—FR-012, FR-152—FR-155; BR-001, BR-002; EC-002, EC-00
 
 **DB changes**
 
-- Добавить `identity.accounts`, `credentials`, `auth_tokens`, `consent_statuses`; draft roots `profiles.profiles`, `profiles.resumes`.
+- Добавить `identity.accounts`, `credentials`, `auth_tokens`, `consent_statuses` и минимальную `sessions`, необходимую опубликованному contract подтверждения email; полный login/logout/CSRF/reset lifecycle остаётся этапу 2.
+- Добавить draft roots `profiles.profiles`, `profiles.resumes` и initial draft `profiles.profile_versions`, чтобы без временных колонок сохранить обязательный `RegistrationRequest.profile`; moderation/publication lifecycle этой таблицы остаётся этапу 4.
 - Добавить `platform.idempotency_records`, `outbox_events`, `outbox_deliveries`, identity inbox и отдельную legal DB с `legal.consent_evidence`; constraints и retention jobs из data model.
 
 **API changes**
@@ -131,7 +132,7 @@ FR-006, FR-007, FR-011, FR-152, FR-160; EC-001; ERR-003; NFR-001—NFR-003; TNFR
 
 **DB changes**
 
-- Добавить `identity.sessions`; расширить cleanup для tokens/sessions и обновление `last_login_at`.
+- Расширить созданную на этапе 1 `identity.sessions` для login/logout/CSRF/reset lifecycle; добавить cleanup для tokens/sessions и обновление `last_login_at`.
 
 **API changes**
 
@@ -213,7 +214,7 @@ FR-013—FR-019, FR-024—FR-032, FR-132—FR-137; BR-003, BR-005, BR-006, BR-02
 **DB changes**
 
 - Добавить `catalog.versions/tags` с воспроизводимым seed ровно 180 записей.
-- Добавить profile/resume version/project/tag tables, `trust.moderation_requests`, `moderation_decisions`, `notifications.notifications`, `email_deliveries` и consumer inboxes.
+- Расширить созданную на этапе 1 `profiles.profile_versions` полным moderation/publication lifecycle; добавить resume version/project/tag tables, `trust.moderation_requests`, `moderation_decisions`, `notifications.notifications`, `email_deliveries` и consumer inboxes.
 
 **API changes**
 

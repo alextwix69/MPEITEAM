@@ -5,4 +5,297 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  schemas  = ["identity", "platform", "profiles"]
+}
+
+enum IdentityFormalRole {
+  student
+  teacher
+  employer
+
+  @@map("formal_role")
+  @@schema("identity")
+}
+
+enum SystemRole {
+  user
+  moderator
+
+  @@map("system_role")
+  @@schema("identity")
+}
+
+enum AccountState {
+  unverified
+  active
+  deleting
+  deleted
+
+  @@map("account_state")
+  @@schema("identity")
+}
+
+enum AuthTokenPurpose {
+  email_verification
+  password_reset
+
+  @@map("auth_token_purpose")
+  @@schema("identity")
+}
+
+enum ConsentDocumentType {
+  age_18
+  user_terms
+  personal_data
+  public_profile_distribution
+
+  @@map("consent_document_type")
+  @@schema("identity")
+}
+
+enum PublicationState {
+  draft
+  pending
+  published
+  revision_required
+  hidden
+  deleting
+
+  @@map("publication_state")
+  @@schema("profiles")
+}
+
+enum PublicVersionState {
+  draft
+  pending
+  approved
+  rejected
+
+  @@map("public_version_state")
+  @@schema("profiles")
+}
+
+enum IdempotencyState {
+  in_progress
+  completed
+  failed
+
+  @@map("idempotency_state")
+  @@schema("platform")
+}
+
+enum OutboxDeliveryState {
+  pending
+  leased
+  completed
+  dead_letter
+
+  @@map("outbox_delivery_state")
+  @@schema("platform")
+}
+
+model Account {
+  id                     String             @id @db.Uuid
+  emailNormalized        String             @unique(map: "accounts_email_normalized_key") @map("email_normalized") @db.VarChar(320)
+  formalRole             IdentityFormalRole @map("formal_role")
+  systemRole             SystemRole         @default(user) @map("system_role")
+  state                  AccountState       @default(unverified)
+  emailVerifiedAt        DateTime?          @map("email_verified_at") @db.Timestamptz(6)
+  deletionRequestedAt    DateTime?          @map("deletion_requested_at") @db.Timestamptz(6)
+  deletionIrreversibleAt DateTime?          @map("deletion_irreversible_at") @db.Timestamptz(6)
+  lastLoginAt            DateTime?          @map("last_login_at") @db.Timestamptz(6)
+  createdAt              DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  rowVersion             BigInt             @default(0) @map("row_version")
+  credential             Credential?
+  authTokens             AuthToken[]
+  sessions               Session[]
+  consents               ConsentStatus[]
+
+  @@index([lastLoginAt, id], map: "accounts_active_last_login_idx")
+  @@map("accounts")
+  @@schema("identity")
+}
+
+model Credential {
+  accountId         String   @id @map("account_id") @db.Uuid
+  passwordHash      String   @map("password_hash")
+  argon2Parameters  Json     @map("argon2_parameters")
+  passwordChangedAt DateTime @map("password_changed_at") @db.Timestamptz(6)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  account           Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@map("credentials")
+  @@schema("identity")
+}
+
+model AuthToken {
+  id         String           @id @db.Uuid
+  accountId  String           @map("account_id") @db.Uuid
+  purpose    AuthTokenPurpose
+  tokenHash  Bytes            @unique(map: "auth_tokens_token_hash_key") @map("token_hash")
+  expiresAt  DateTime         @map("expires_at") @db.Timestamptz(6)
+  consumedAt DateTime?        @map("consumed_at") @db.Timestamptz(6)
+  createdAt  DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  account    Account          @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, purpose, createdAt(sort: Desc)], map: "auth_tokens_account_purpose_created_idx")
+  @@index([expiresAt, id], map: "auth_tokens_open_expiry_idx")
+  @@map("auth_tokens")
+  @@schema("identity")
+}
+
+model Session {
+  id             String    @id @db.Uuid
+  sessionHash    Bytes     @unique(map: "sessions_session_hash_key") @map("session_hash")
+  accountId      String    @map("account_id") @db.Uuid
+  csrfSecretHash Bytes     @map("csrf_secret_hash")
+  expiresAt      DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt      DateTime? @map("revoked_at") @db.Timestamptz(6)
+  lastSeenAt     DateTime  @map("last_seen_at") @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  account        Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, createdAt(sort: Desc)], map: "sessions_account_active_idx")
+  @@index([expiresAt, id], map: "sessions_active_expiry_idx")
+  @@map("sessions")
+  @@schema("identity")
+}
+
+model ConsentStatus {
+  accountId       String              @map("account_id") @db.Uuid
+  documentType    ConsentDocumentType @map("document_type")
+  documentVersion String              @map("document_version") @db.VarChar(64)
+  acceptedAt      DateTime?           @map("accepted_at") @db.Timestamptz(6)
+  revokedAt       DateTime?           @map("revoked_at") @db.Timestamptz(6)
+  sourceEventId   String              @map("source_event_id") @db.Uuid
+  updatedAt       DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  account         Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@id([accountId, documentType])
+  @@map("consent_statuses")
+  @@schema("identity")
+}
+
+model Profile {
+  id                 String             @id @db.Uuid
+  accountId          String             @unique(map: "profiles_account_id_key") @map("account_id") @db.Uuid
+  formalRole         IdentityFormalRole @map("formal_role")
+  timezone           String             @default("Europe/Moscow") @db.VarChar(64)
+  publicationState   PublicationState   @default(draft) @map("publication_state")
+  publishedVersionId String?            @map("published_version_id") @db.Uuid
+  pendingVersionId   String?            @map("pending_version_id") @db.Uuid
+  editLocked         Boolean            @default(false) @map("edit_locked")
+  createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  rowVersion         BigInt             @default(0) @map("row_version")
+  versions           ProfileVersion[]
+  resumes            Resume[]
+
+  @@map("profiles")
+  @@schema("profiles")
+}
+
+model ProfileVersion {
+  id             String             @id @db.Uuid
+  profileId      String             @map("profile_id") @db.Uuid
+  versionNo      Int                @map("version_no")
+  state          PublicVersionState @default(draft)
+  fullName       String             @map("full_name") @db.VarChar(200)
+  specialization String             @db.VarChar(200)
+  institute      String?            @db.VarChar(200)
+  course         Int?               @db.SmallInt
+  department     String?            @db.VarChar(200)
+  company        String?            @db.VarChar(200)
+  position       String?            @db.VarChar(200)
+  avatarMediaId  String?            @map("avatar_media_id") @db.Uuid
+  submittedAt    DateTime?          @map("submitted_at") @db.Timestamptz(6)
+  decidedAt      DateTime?          @map("decided_at") @db.Timestamptz(6)
+  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  profile        Profile            @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@unique([profileId, versionNo], map: "profile_versions_profile_version_key")
+  @@map("profile_versions")
+  @@schema("profiles")
+}
+
+model Resume {
+  id                 String           @id @db.Uuid
+  profileId          String           @map("profile_id") @db.Uuid
+  slot               Int              @db.SmallInt
+  isSearchVisible    Boolean          @map("is_search_visible")
+  publicationState   PublicationState @default(draft) @map("publication_state")
+  publishedVersionId String?          @map("published_version_id") @db.Uuid
+  pendingVersionId   String?          @map("pending_version_id") @db.Uuid
+  editLocked         Boolean          @default(false) @map("edit_locked")
+  createdAt          DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  rowVersion         BigInt           @default(0) @map("row_version")
+  profile            Profile          @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@unique([profileId, slot], map: "resumes_profile_slot_key")
+  @@map("resumes")
+  @@schema("profiles")
+}
+
+model IdempotencyRecord {
+  id                String           @id @db.Uuid
+  actorAccountId    String?          @map("actor_account_id") @db.Uuid
+  publicSubjectHash Bytes?           @map("public_subject_hash")
+  route             String           @db.VarChar(160)
+  key               String           @db.VarChar(128)
+  requestHash       Bytes            @map("request_hash")
+  state             IdempotencyState
+  responseStatus    Int?             @map("response_status")
+  responseRefType   String?          @map("response_ref_type") @db.VarChar(80)
+  responseRefId     String?          @map("response_ref_id") @db.Uuid
+  responseBody      Json?            @map("response_body")
+  responseSecret    Bytes?           @map("response_secret")
+  expiresAt         DateTime         @map("expires_at") @db.Timestamptz(6)
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([expiresAt, id], map: "idempotency_records_expiry_idx")
+  @@map("idempotency_records")
+  @@schema("platform")
+}
+
+model OutboxEvent {
+  id             String           @id @db.Uuid
+  eventType      String           @map("event_type") @db.VarChar(120)
+  eventVersion   Int              @map("event_version") @db.SmallInt
+  aggregateType  String           @map("aggregate_type") @db.VarChar(80)
+  aggregateId    String           @map("aggregate_id") @db.Uuid
+  occurredAt     DateTime         @map("occurred_at") @db.Timestamptz(6)
+  correlationId  String           @map("correlation_id") @db.Uuid
+  causationId    String?          @map("causation_id") @db.Uuid
+  actorAccountId String?          @map("actor_account_id") @db.Uuid
+  payload        Json
+  deliveries     OutboxDelivery[]
+
+  @@map("outbox_events")
+  @@schema("platform")
+}
+
+model OutboxDelivery {
+  id            String              @id @db.Uuid
+  eventId       String              @map("event_id") @db.Uuid
+  consumer      String              @db.VarChar(100)
+  state         OutboxDeliveryState @default(pending)
+  attemptCount  Int                 @default(0) @map("attempt_count")
+  availableAt   DateTime            @map("available_at") @db.Timestamptz(6)
+  leaseUntil    DateTime?           @map("lease_until") @db.Timestamptz(6)
+  completedAt   DateTime?           @map("completed_at") @db.Timestamptz(6)
+  lastErrorCode String?             @map("last_error_code") @db.VarChar(100)
+  createdAt     DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  rowVersion    BigInt              @default(0) @map("row_version")
+  event         OutboxEvent         @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, consumer], map: "outbox_deliveries_event_consumer_key")
+  @@index([availableAt, id], map: "outbox_deliveries_due_idx")
+  @@index([state, availableAt, id], map: "outbox_deliveries_dead_letter_idx")
+  @@map("outbox_deliveries")
+  @@schema("platform")
 }

@@ -1,13 +1,13 @@
 # Команда.МЭИ
 
-Application foundation сервиса проектных команд МЭИ. Текущий runnable slice содержит русскоязычный web shell, API/worker process roles, health/degraded состояния и локальные PostgreSQL, Redis и S3-compatible storage. Бизнес-функции и endpoints из `api/openapi.yaml` пока не реализованы.
+Runnable MVP slice сервиса проектных команд МЭИ. Помимо application shell реализованы регистрация с четырьмя отдельными согласиями, подтверждение email, повторная отправка письма и `GET /me`. API и worker используют transactional outbox; минимальные доказательства согласий изолированы в отдельной legal database.
 
 ## Требования
 
 - Node.js 24.x;
 - pnpm 11.19 через Corepack (`corepack enable`);
 - Docker Desktop с Docker Compose 5.x;
-- свободный порт `8080`; локальные data-порты `55432`, `6379`, `9000` и `9001` привязываются только к `127.0.0.1`.
+- свободный порт `8080`; локальные data-порты `55432`, `6379`, `9000`, `9001`, а также Mailpit `8025` привязываются только к `127.0.0.1`.
 
 ## Локальный запуск
 
@@ -50,6 +50,8 @@ docker compose start worker
 
 Web и API должны остаться доступными, а главная страница — показать «Сервис работает с ограничениями».
 
+Локальные письма подтверждения доступны в Mailpit по адресу <http://127.0.0.1:8025>. Значения `local-v1` для юридических документов предназначены только для разработки; production release блокируется до публикации утверждённых текстов и версий.
+
 ## Разработка и проверки
 
 Основные quality gates:
@@ -86,6 +88,8 @@ pnpm test:e2e
 pnpm openapi:generate
 ```
 
+`api/openapi.release.yaml` фиксирует последний выпущенный контракт. `pnpm openapi:check` сравнивает с ним текущую спецификацию и блокирует breaking changes; snapshot обновляется только при формальном выпуске нового совместимого baseline либо новой major API version.
+
 Health endpoints намеренно не входят в business OpenAPI contract и используют отдельный Zod-validated client.
 
 ## Структура
@@ -93,6 +97,8 @@ Health endpoints намеренно не входят в business OpenAPI contra
 - `backend/src/api/main.ts` — NestJS API process entrypoint;
 - `backend/src/worker/main.ts` — отдельный NestJS worker process entrypoint;
 - `backend/src/modules/` — public shells 13 bounded contexts;
+- `backend/src/modules/identity/` и `backend/src/modules/profiles/` — registration application slice;
+- `backend/prisma/legal/` — отдельная migration history legal evidence database;
 - `backend/prisma/` — Prisma schema и migration history;
 - `frontend/src/app/` — Next.js App Router shell;
 - `infra/` — production Dockerfiles, Nginx и local database initialization;

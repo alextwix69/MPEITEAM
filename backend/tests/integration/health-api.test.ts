@@ -3,11 +3,11 @@ import request from 'supertest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { version } from 'uuid';
 import { createApiApplication } from '../../src/api/app';
-import type { ApiEnvironment } from '../../src/platform/config/env.schema';
+import { parseApiEnvironment } from '../../src/platform/config/env.schema';
 import type { ComponentStatus, DependencyProbe } from '../../src/platform/health/health.types';
 import { JsonLogger } from '../../src/platform/observability/json-logger';
 
-const environment: ApiEnvironment = {
+const environment = parseApiEnvironment({
   NODE_ENV: 'test',
   LOG_LEVEL: 'silent',
   REDIS_URL: 'redis://localhost:6379',
@@ -16,15 +16,15 @@ const environment: ApiEnvironment = {
   S3_BUCKET: 'komanda-media',
   S3_ACCESS_KEY: 'local',
   S3_SECRET_KEY: 'local-secret',
-  S3_FORCE_PATH_STYLE: true,
-  DEPENDENCY_TIMEOUT_MS: 500,
+  S3_FORCE_PATH_STYLE: 'true',
+  DEPENDENCY_TIMEOUT_MS: '500',
   WORKER_HEARTBEAT_KEY: 'platform:worker:heartbeat',
-  WORKER_HEARTBEAT_INTERVAL_MS: 5000,
-  WORKER_HEARTBEAT_TTL_SECONDS: 15,
+  WORKER_HEARTBEAT_INTERVAL_MS: '5000',
+  WORKER_HEARTBEAT_TTL_SECONDS: '15',
   OTEL_SERVICE_NAME: 'test',
-  API_PORT: 3001,
-  API_DATABASE_URL: 'postgresql://user:pass@localhost:5432/test',
-};
+  API_PORT: '3001',
+  API_DATABASE_URL: 'postgresql://user:pass@localhost:5432/test?connection_limit=2',
+});
 
 let application: INestApplication | undefined;
 

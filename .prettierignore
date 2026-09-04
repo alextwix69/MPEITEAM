@@ -5,6 +5,7 @@ coverage
 pnpm-lock.yaml
 docs
 api/openapi.yaml
+api/openapi.release.yaml
 .continue
 frontend/src/lib/api/generated.ts
 frontend/next-env.d.ts

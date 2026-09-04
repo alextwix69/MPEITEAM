@@ -5,15 +5,15 @@ services:
     image: postgres:17.6-alpine
     environment:
       POSTGRES_DB: komanda
-      POSTGRES_PASSWORD: komanda
-      POSTGRES_USER: komanda
+      POSTGRES_PASSWORD: komanda-admin-local
+      POSTGRES_USER: komanda_admin
     ports:
       - '127.0.0.1:${POSTGRES_HOST_PORT:-55432}:5432'
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./infra/postgres/init-test-database.sql:/docker-entrypoint-initdb.d/10-test-database.sql:ro
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U komanda -d komanda']
+      test: ['CMD-SHELL', 'pg_isready -U komanda_admin -d komanda']
       interval: 3s
       timeout: 3s
       retries: 20
@@ -62,6 +62,12 @@ services:
         mc mb --ignore-existing local/komanda-media
     restart: 'no'
 
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - '127.0.0.1:8025:8025'
+    restart: unless-stopped
+
   migrate:
     build:
       context: .
@@ -76,7 +82,27 @@ services:
         'backend/prisma/schema.prisma',
       ]
     environment:
-      DATABASE_URL: postgresql://komanda:komanda@postgres:5432/komanda?schema=public
+      DATABASE_URL: postgresql://komanda_admin:komanda-admin-local@postgres:5432/komanda?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  legal-migrate:
+    build:
+      context: .
+      dockerfile: infra/docker/backend.Dockerfile
+    command:
+      [
+        'node',
+        'backend/node_modules/prisma/build/index.js',
+        'migrate',
+        'deploy',
+        '--schema',
+        'backend/prisma/legal/schema.prisma',
+      ]
+    environment:
+      LEGAL_DATABASE_URL: postgresql://komanda_legal:komanda-legal-local@postgres:5432/komanda_legal?schema=public
     depends_on:
       postgres:
         condition: service_healthy
@@ -91,7 +117,7 @@ services:
       NODE_ENV: production
       LOG_LEVEL: info
       API_PORT: 3001
-      API_DATABASE_URL: postgresql://komanda:komanda@postgres:5432/komanda?schema=public&connection_limit=5&pool_timeout=5
+      API_DATABASE_URL: postgresql://komanda_api:komanda-api-local@postgres:5432/komanda?schema=public&connection_limit=5&pool_timeout=5
       REDIS_URL: redis://redis:6379
       S3_ENDPOINT: http://minio:9000
       S3_REGION: ru-central-1
@@ -104,12 +130,21 @@ services:
       WORKER_HEARTBEAT_INTERVAL_MS: 5000
       WORKER_HEARTBEAT_TTL_SECONDS: 15
       OTEL_SERVICE_NAME: komanda-mpei
+      AUTH_TOKEN_TTL_SECONDS: 86400
+      AUTH_SESSION_TTL_SECONDS: 86400
+      AUTH_TOKEN_ENCRYPTION_KEY: '1111111111111111111111111111111111111111111111111111111111111111'
+      IDEMPOTENCY_HMAC_KEY: development-idempotency-key-change-before-production
+      CONSENT_VERSION_AGE_18: local-v1
+      CONSENT_VERSION_USER_TERMS: local-v1
+      CONSENT_VERSION_PERSONAL_DATA: local-v1
+      CONSENT_VERSION_PUBLIC_PROFILE: local-v1
+      RATE_LIMIT_WINDOW_SECONDS: 60
+      RATE_LIMIT_MAX_REQUESTS: 20
+      RESEND_COOLDOWN_SECONDS: 60
+      TRUST_PROXY_HOPS: 1
+      SESSION_COOKIE_SECURE: 'true'
     depends_on:
       migrate:
-        condition: service_completed_successfully
-      redis:
-        condition: service_healthy
-      minio-setup:
         condition: service_completed_successfully
     healthcheck:
       test:
@@ -131,14 +166,20 @@ services:
     command: ['node', 'backend/dist/worker/main.js']
     environment:
       <<: *runtime-environment
-      WORKER_DATABASE_URL: postgresql://komanda:komanda@postgres:5432/komanda?schema=public&connection_limit=3&pool_timeout=5
+      WORKER_DATABASE_URL: postgresql://komanda_worker:komanda-worker-local@postgres:5432/komanda?schema=public&connection_limit=3&pool_timeout=5
+      LEGAL_DATABASE_URL: postgresql://komanda_legal:komanda-legal-local@postgres:5432/komanda_legal?schema=public&connection_limit=2&pool_timeout=5
+      LEGAL_SUBJECT_HMAC_KEY: development-legal-subject-key-change-before-production
+      SMTP_URL: smtp://mailpit:1025
+      EMAIL_FROM: no-reply@komanda.mpei.ru
+      PUBLIC_APP_URL: http://localhost:8080
+      OUTBOX_POLL_INTERVAL_MS: 1000
     depends_on:
       migrate:
         condition: service_completed_successfully
-      redis:
-        condition: service_healthy
-      minio-setup:
+      legal-migrate:
         condition: service_completed_successfully
+      mailpit:
+        condition: service_started
     restart: unless-stopped
 
   web:
@@ -149,6 +190,10 @@ services:
       NODE_ENV: production
       HOSTNAME: 0.0.0.0
       PORT: 3000
+      CONSENT_VERSION_AGE_18: local-v1
+      CONSENT_VERSION_USER_TERMS: local-v1
+      CONSENT_VERSION_PERSONAL_DATA: local-v1
+      CONSENT_VERSION_PUBLIC_PROFILE: local-v1
     depends_on:
       api:
         condition: service_healthy

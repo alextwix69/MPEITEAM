@@ -40,6 +40,20 @@ describe('environment validation', () => {
     );
   });
 
+  it.each([
+    ['missing', 'postgresql://user:pass@localhost:5432/api'],
+    ['zero', 'postgresql://user:pass@localhost:5432/api?connection_limit=0'],
+    ['not numeric', 'postgresql://user:pass@localhost:5432/api?connection_limit=many'],
+  ])('rejects a %s database connection limit', (_case, databaseUrl) => {
+    expect(() =>
+      parseApiEnvironment({
+        ...common,
+        API_PORT: '3001',
+        API_DATABASE_URL: databaseUrl,
+      }),
+    ).toThrow('API_DATABASE_URL');
+  });
+
   it('reports invalid values without echoing secrets', () => {
     let message = '';
     try {
@@ -56,5 +70,31 @@ describe('environment validation', () => {
     expect(message).toContain('WORKER_DATABASE_URL');
     expect(message).not.toContain(common.S3_SECRET_KEY);
     expect(message).not.toContain('not-a-url');
+  });
+
+  it.each([
+    ['REDIS_URL', { REDIS_URL: 'https://redis.example' }],
+    ['S3_ENDPOINT', { S3_ENDPOINT: 'ftp://objects.example' }],
+    ['WORKER_DATABASE_URL', { WORKER_DATABASE_URL: 'https://database.example' }],
+  ])('rejects an unsupported protocol in %s', (field, override) => {
+    expect(() =>
+      parseWorkerEnvironment({
+        ...common,
+        WORKER_DATABASE_URL: 'postgresql://user:pass@localhost:5432/worker?connection_limit=3',
+        ...override,
+      }),
+    ).toThrow(field);
+  });
+
+  it('rejects a heartbeat TTL that can expire between refreshes', () => {
+    expect(() =>
+      parseWorkerEnvironment({
+        ...common,
+        DEPENDENCY_TIMEOUT_MS: '10000',
+        WORKER_HEARTBEAT_INTERVAL_MS: '60000',
+        WORKER_HEARTBEAT_TTL_SECONDS: '2',
+        WORKER_DATABASE_URL: 'postgresql://user:pass@localhost:5432/worker?connection_limit=3',
+      }),
+    ).toThrow('WORKER_HEARTBEAT_TTL_SECONDS');
   });
 });

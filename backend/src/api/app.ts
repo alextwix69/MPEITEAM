@@ -19,10 +19,12 @@ export async function createApiApplication(
 ): Promise<INestApplication> {
   const logger = options.logger ?? new JsonLogger('api', environment.LOG_LEVEL);
   const probe = options.probe ?? new RuntimeDependencies(environment);
-  const application = await NestFactory.create(AppModule.register(probe), {
+  const application = await NestFactory.create(AppModule.register(probe, environment), {
     bufferLogs: true,
     logger,
   });
+
+  application.getHttpAdapter().getInstance().set('trust proxy', environment.TRUST_PROXY_HOPS);
 
   application.use(requestContextMiddleware(logger));
   application.useGlobalFilters(new ProblemDetailsFilter(logger));

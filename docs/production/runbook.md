@@ -31,6 +31,26 @@
 4. Контролировать DLQ, outbox lag, duplicate-domain constraints и email backlog.
 5. Manual replay выполнять только по delivery ID и с идемпотентным handler.
 
+## Письма подтверждения email недоступны
+
+Сигналы: рост `outbox.delivery.attempts{consumer="identity.verification-email",result="retry"}`, DLQ либо жалобы на отсутствие писем.
+
+1. Проверить SMTP provider без вывода адресов получателей, verification URL и token в ticket/log.
+2. Убедиться, что account остаётся `unverified`, а email delivery присутствует в PostgreSQL outbox.
+3. Восстановить provider и дождаться reconciliation; не создавать token и письмо вручную.
+4. Для manual replay использовать delivery ID. Детерминированный `Message-ID` равен event ID, но фактическую provider-side дедупликацию проверить отдельно.
+5. Если token истёк, пользователь использует generic resend flow; старый token не восстанавливается.
+
+## Legal evidence database недоступна
+
+Сигналы: retry/DLQ consumer `compliance.consent-evidence`, ошибки `CONSENT_EVIDENCE_UNAVAILABLE`, рост возраста неподтверждённых регистраций.
+
+1. Не активировать account вручную и не помечать delivery завершённой без строки `legal.consent_evidence`.
+2. Проверить отдельные legal credentials, migration и доступ worker; API не должен иметь эти credentials.
+3. После восстановления replay безопасен по `UNIQUE(source_event_id)`.
+4. Проверить четыре completed legal deliveries на account и отсутствие email/profile/account ID в legal rows.
+5. Убедиться, что verification token не был consumed при временной ошибке и исходная ссылка снова работает.
+
 ## PostgreSQL degradation
 
 1. Проверить managed failover, pool saturation, wait events, deadlocks, long statements и недавние migrations.

@@ -12,7 +12,9 @@ import { WORKER_ENVIRONMENT, WORKER_LOGGER, WORKER_RUNTIME } from './worker.toke
 @Injectable()
 export class WorkerService implements OnApplicationBootstrap, OnApplicationShutdown {
   #heartbeatTimer?: NodeJS.Timeout;
-  #probeTimer?: NodeJS.Timeout;
+  #heartbeatRefresh?: Promise<void>;
+  #shuttingDown = false;
+  #lastDependencyResult?: 'ready' | 'degraded';
 
   constructor(
     @Inject(WORKER_ENVIRONMENT) private readonly environment: WorkerEnvironment,
@@ -20,15 +22,8 @@ export class WorkerService implements OnApplicationBootstrap, OnApplicationShutd
     @Inject(WORKER_LOGGER) private readonly logger: JsonLogger,
   ) {}
 
-  async #heartbeat(): Promise<void> {
-    try {
-      await this.runtime.writeWorkerHeartbeat();
-    } catch {
-      this.logger.warn('Worker heartbeat недоступен.', 'WorkerHeartbeat');
-    }
-  }
-
-  async #probeDependencies(): Promise<void> {
+  async #refreshHeartbeat(): Promise<void> {
+    const startedAt = performance.now();
     const [postgres, redis, objectStorage] = await Promise.all([
       this.runtime.checkPostgres(),
       this.runtime.checkRedis(),
@@ -36,31 +31,50 @@ export class WorkerService implements OnApplicationBootstrap, OnApplicationShutd
     ]);
     const result =
       postgres === 'up' && redis === 'up' && objectStorage === 'up' ? 'ready' : 'degraded';
-    this.logger
-      .child({
-        module: 'platform',
-        operation: 'worker.dependencies',
-        result,
-        postgres,
-        redis,
-        objectStorage,
-      })
-      .info('Проверка зависимостей worker завершена.');
+
+    if (result === 'ready') {
+      try {
+        await this.runtime.writeWorkerHeartbeat();
+      } catch {
+        this.logger.warn('Worker heartbeat недоступен.', 'WorkerHeartbeat');
+      }
+    }
+
+    if (result !== this.#lastDependencyResult) {
+      this.logger
+        .child({
+          module: 'platform',
+          operation: 'worker.dependencies',
+          result,
+          postgres,
+          redis,
+          objectStorage,
+          latencyMs: Math.round((performance.now() - startedAt) * 100) / 100,
+        })
+        .info('Проверка зависимостей worker завершена.');
+      this.#lastDependencyResult = result;
+    }
+  }
+
+  #scheduleHeartbeat(): void {
+    if (this.#shuttingDown) return;
+    this.#heartbeatTimer = setTimeout(() => {
+      this.#heartbeatRefresh = this.#refreshHeartbeat().finally(() => {
+        this.#heartbeatRefresh = undefined;
+        this.#scheduleHeartbeat();
+      });
+    }, this.environment.WORKER_HEARTBEAT_INTERVAL_MS);
   }
 
   async onApplicationBootstrap(): Promise<void> {
-    await Promise.all([this.#heartbeat(), this.#probeDependencies()]);
-    this.#heartbeatTimer = setInterval(
-      () => void this.#heartbeat(),
-      this.environment.WORKER_HEARTBEAT_INTERVAL_MS,
-    );
-    this.#probeTimer = setInterval(() => void this.#probeDependencies(), 30_000);
+    await this.#refreshHeartbeat();
+    this.#scheduleHeartbeat();
   }
 
   async onApplicationShutdown(): Promise<void> {
-    if (this.#heartbeatTimer) clearInterval(this.#heartbeatTimer);
-    if (this.#probeTimer) clearInterval(this.#probeTimer);
-    await this.runtime.deleteWorkerHeartbeat();
+    this.#shuttingDown = true;
+    if (this.#heartbeatTimer) clearTimeout(this.#heartbeatTimer);
+    await this.#heartbeatRefresh;
     await this.runtime.close();
   }
 }

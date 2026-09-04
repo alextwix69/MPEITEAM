@@ -1,0 +1,8 @@
+{
+  "name": "@komanda/openapi-compatibility",
+  "version": "0.1.0",
+  "private": true,
+  "devDependencies": {
+    "@pb33f/openapi-changes": "0.2.11"
+  }
+}

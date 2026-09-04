@@ -2,8 +2,9 @@ import type { ArgumentsHost, ExceptionFilter } from '@nestjs/common';
 import { Catch, HttpException, HttpStatus } from '@nestjs/common';
 import type { Response } from 'express';
 import { v7 as uuidv7 } from 'uuid';
+import { ApplicationError } from './application-error';
 import { getRequestContext } from './request-context';
-import { sanitizeLogMessage, type JsonLogger } from '../observability/json-logger';
+import type { JsonLogger } from '../observability/json-logger';
 
 export interface ProblemDetails {
   error: {
@@ -21,8 +22,19 @@ export function createProblemDetails(
   message: string,
   requestId: string,
   retryable = false,
+  details?: Record<string, unknown>,
+  fieldErrors?: Array<{ path: string; code: string; message: string }>,
 ): ProblemDetails {
-  return { error: { code, message, requestId, retryable } };
+  return {
+    error: {
+      code,
+      message,
+      requestId,
+      retryable,
+      ...(details ? { details } : {}),
+      ...(fieldErrors ? { fieldErrors } : {}),
+    },
+  };
 }
 
 function errorForStatus(
@@ -56,6 +68,17 @@ function errorForStatus(
   };
 }
 
+export function safeExceptionMetadata(exception: unknown): { exceptionType: string } {
+  return {
+    exceptionType:
+      exception instanceof HttpException
+        ? 'HttpException'
+        : exception instanceof Error
+          ? 'Error'
+          : 'UnknownError',
+  };
+}
+
 @Catch()
 export class ProblemDetailsFilter implements ExceptionFilter {
   constructor(private readonly logger: JsonLogger) {}
@@ -66,7 +89,16 @@ export class ProblemDetailsFilter implements ExceptionFilter {
     const requestId = context?.requestId ?? uuidv7();
     const status =
       exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
-    const safeError = errorForStatus(status);
+    const safeError =
+      exception instanceof ApplicationError
+        ? {
+            code: exception.code,
+            message: exception.publicMessage,
+            retryable: exception.retryable,
+            details: exception.details,
+            fieldErrors: exception.fieldErrors,
+          }
+        : errorForStatus(status);
 
     if (status >= 500) {
       this.logger
@@ -76,19 +108,26 @@ export class ProblemDetailsFilter implements ExceptionFilter {
           module: 'platform',
           operation: 'http.exception',
           result: status,
+          ...safeExceptionMetadata(exception),
         })
-        .error(
-          sanitizeLogMessage(
-            exception instanceof Error ? exception.message : 'Неизвестная ошибка.',
-          ),
-        );
+        .error('HTTP request failed.');
     }
 
+    if (exception instanceof ApplicationError && exception.retryAfter !== undefined) {
+      response.setHeader('Retry-After', exception.retryAfter);
+    }
     response
       .status(status)
       .type('application/problem+json')
       .send(
-        createProblemDetails(safeError.code, safeError.message, requestId, safeError.retryable),
+        createProblemDetails(
+          safeError.code,
+          safeError.message,
+          requestId,
+          safeError.retryable,
+          'details' in safeError ? safeError.details : undefined,
+          'fieldErrors' in safeError ? safeError.fieldErrors : undefined,
+        ),
       );
   }
 }
