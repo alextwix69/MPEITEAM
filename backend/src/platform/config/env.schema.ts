@@ -76,6 +76,25 @@ const apiSchema = commonSchema
   .safeExtend({
     API_PORT: z.coerce.number().int().min(1).max(65_535).default(3001),
     API_DATABASE_URL: databaseUrlSchema,
+    AUTH_ALLOWED_ORIGINS: z
+      .string()
+      .default('http://localhost:8080')
+      .transform((value) => value.split(',').map((origin) => origin.trim()))
+      .pipe(
+        z
+          .array(
+            z.string().refine((value) => {
+              try {
+                const url = new URL(value);
+                return ['http:', 'https:'].includes(url.protocol) && url.origin === value;
+              } catch {
+                return false;
+              }
+            }, 'expected an exact HTTP origin'),
+          )
+          .min(1),
+      ),
+    AUTH_RESET_TTL_SECONDS: z.coerce.number().int().min(300).max(86400).default(3600),
     AUTH_TOKEN_TTL_SECONDS: z.coerce.number().int().min(300).max(604_800).default(86_400),
     AUTH_SESSION_TTL_SECONDS: z.coerce.number().int().min(300).max(2_592_000).default(86_400),
     AUTH_TOKEN_ENCRYPTION_KEY: z

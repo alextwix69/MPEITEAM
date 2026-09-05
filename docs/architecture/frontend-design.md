@@ -2,6 +2,8 @@
 
 Статус: проектный документ. Описывает дизайн фронтенд-приложения MVP без реализации кода.
 
+Уточнение реализованного auth slice (TASK-005): регистрация находится на `/registration`, ожидание/повтор письма — `/registration/check-email`, подтверждение — `/verify-email`. Упоминания `/register` и `/confirm-email` ниже обозначают соответствующие проектные экраны, а не дополнительные runtime routes. Добавлены `/login`, `/forgot-password`, `/reset-password` и минимальный `/account` с server-side session check через API. После подтверждения доступна главная; editor профиля остаётся следующему slice. Login не требует предварительной session/CSRF; после успеха выполняются `/me` и `/auth/csrf`. Account screen показывает только разрешённое текущее состояние, включая ограниченные `unverified/deleting`, и выход. API остаётся источником authorization; Next.js не читает БД. BroadcastChannel передаёт между вкладками только сигнал обновления auth state, без секретов.
+
 Источники:
 
 - `docs/product/product-spec.md`, `docs/product/idea.md`, `docs/product/requirements.md`;
@@ -834,4 +836,3 @@ UI-правила: отсутствие права → скрытие дейст
 6. Конкретные поля DTO и endpoint-инвентарь (`/api/v1/*`) доопределяются по мере feature implementation; frontend зависит от стабильности DTO (ADR-008).
 
 Открытых продуктовых вопросов по спецификации нет (`product-spec.md`, «Open questions»). Новые вопросы фиксируются как изменения спецификации до реализации.
-

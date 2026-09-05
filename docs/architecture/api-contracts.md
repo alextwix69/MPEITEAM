@@ -110,13 +110,19 @@ Content-Type ошибки — `application/problem+json`. Envelope сохран�
 
 ### 6.1 Identity и session
 
+Реализация этапа 2: CSRF выдаётся JSON, отдельная CSRF cookie не нужна. Токен детерминирован для конкретной session (HMAC-SHA256 с opaque secret и domain-separated session ID), в БД хранится только hash. Сессии этапа 1 обновляют CSRF hash при первом bootstrap. Несколько вкладок и экземпляров API получают одинаковый токен до rotation. Raw session secret доступен только через HttpOnly cookie.
+
+Logout с живой session проверяет Origin и CSRF; повтор без живой session возвращает `204` после проверки Origin. Login/reset public exceptions не требуют предварительной session. Reset не активирует аккаунт и не отменяет удаление. Для `deleting` login выдаёт только ограниченную session; `deleted` возвращается только после успешной проверки credentials. Password reuse означает совпадение с текущим hash, история паролей не хранится.
+
+Login/verification replay возвращает исходный cookie и абсолютный expiry, но не изменяет строку session: после revoke повторный `/me` отклоняется. Вход и reset сериализуются на account advisory lock; credential повторно проверяется под lock после Argon2 verification. Reset request имеет cooldown, равный `RESEND_COOLDOWN_SECONDS`, и всегда отвечает generic `202`.
+
 | Method/path | Authentication / authorization | Request и validation | Response / HTTP | Business errors | I/C/P/S/F |
 |---|---|---|---|---|---|
 | `GET /auth/csrf` | `Session`; любая незавершённая сессия | Нет body. | `200 CsrfToken`; `Cache-Control: no-store`. | `AUTH_REQUIRED`. | `—` |
 | `POST /auth/registrations` | `Public`; rate limit IP+email | `RegistrationRequest`: unique normalized email, password 12..128, role; student/teacher требуют `@mpei.ru`; role-shaped profile; четыре отдельных `accepted=true` и актуальные document versions. | `201 RegistrationResult` с `accountState=unverified`; verification email асинхронен. | `EMAIL_ALREADY_REGISTERED`, `EMAIL_DOMAIN_NOT_ALLOWED`, `AGE_CONFIRMATION_REQUIRED`, `CONSENT_REQUIRED`, `CONSENT_VERSION_OUTDATED`. | `I:req` |
 | `POST /auth/email-verifications` | `Public`; одноразовый token | `token` 32..2048. | `200 SessionView`, cookie обновлена; active только после всех consent guards и legal proof именно принятой версии, которая была актуальна при регистрации. Более новая версия документа требует отдельного последующего consent flow и не переписывает прежнее волеизъявление автоматически. | `TOKEN_INVALID_OR_EXPIRED`, `CONSENT_EVIDENCE_UNAVAILABLE`. | `I:req` |
 | `POST /auth/email-verifications/resend` | `Session` (`unverified`) или public email flow; rate limit | Optional `email`; одинаковый внешний результат независимо от существования аккаунта. | `202 OperationAccepted`. | `ALREADY_VERIFIED`; rate limit. | `I:req` |
-| `POST /auth/sessions` | `Public`; rate limit IP+email | Email ≤320, password 1..128. | `200 SessionView`, session+CSRF cookies; `Cache-Control: no-store`. | `INVALID_CREDENTIALS`, `ACCOUNT_DELETED`. | `I:opt` |
+| `POST /auth/sessions` | `Public`; rate limit IP+email | Email ≤320, password 1..128. | `200 SessionView`, `__Host-session` cookie; CSRF отдельно через `GET /auth/csrf`; `Cache-Control: no-store`. | `INVALID_CREDENTIALS`, `ACCOUNT_DELETED`. | `I:opt` |
 | `DELETE /auth/session` | `Session`, включая `deleting` | CSRF; body отсутствует. | `204`; повторный logout также `204`. | — | `I:—` (HTTP-idempotent) |
 | `POST /auth/password-resets` | `Public`; rate limit | Email ≤320; ответ не перечисляет аккаунт. | `202 OperationAccepted`. | Только generic/rate-limit. | `I:req` |
 | `POST /auth/password-resets/confirm` | `Public` | One-time token; новый password 12..128. | `204`, все старые sessions отзываются. | `TOKEN_INVALID_OR_EXPIRED`, `PASSWORD_REUSED`. | `I:req` |

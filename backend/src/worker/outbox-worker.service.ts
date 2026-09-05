@@ -10,7 +10,7 @@ import Redis, { type RedisOptions } from 'ioredis';
 import { z } from 'zod';
 import { metrics } from '@opentelemetry/api';
 import { LegalEvidenceStore } from '../modules/compliance';
-import { EMAIL_SENDER, type EmailSender } from '../modules/identity';
+import { EMAIL_SENDER, type EmailSender, deliverPasswordReset } from '../modules/identity';
 import type { WorkerEnvironment } from '../platform/config/env.schema';
 import { decryptSecret } from '../platform/security/crypto';
 import type { JsonLogger } from '../platform/observability/json-logger';
@@ -209,6 +209,14 @@ export class OutboxWorkerService implements OnApplicationBootstrap, OnApplicatio
       if (delivery.event.eventVersion !== 1) throw new Error('EVENT_VERSION_UNSUPPORTED');
       if (delivery.consumer === 'identity.verification-email') {
         await this.#sendVerificationEmail(delivery.event);
+      } else if (delivery.consumer === 'identity.password-reset-email') {
+        await deliverPasswordReset(
+          this.#database,
+          this.emailSender,
+          this.environment.AUTH_TOKEN_ENCRYPTION_KEY,
+          this.environment.PUBLIC_APP_URL,
+          delivery.event,
+        );
       } else if (delivery.consumer === 'compliance.consent-evidence') {
         await this.legalEvidence.appendConsentEvidence(delivery.event);
       } else {
@@ -245,7 +253,16 @@ export class OutboxWorkerService implements OnApplicationBootstrap, OnApplicatio
     } catch (error) {
       clearInterval(renewalTimer);
       await renewalInFlight;
-      const errorCode = error instanceof Error ? error.message.slice(0, 100) : 'DELIVERY_FAILED';
+      const safeCodes = [
+        'EVENT_VERSION_UNSUPPORTED',
+        'CONSUMER_UNKNOWN',
+        'ACCOUNT_NOT_FOUND',
+        'DELIVERY_LEASE_LOST',
+      ];
+      const errorCode =
+        error instanceof Error && safeCodes.includes(error.message)
+          ? error.message
+          : 'DELIVERY_FAILED';
       const deadLetter = delivery.attemptCount >= MAX_ATTEMPTS;
       await this.#database.outboxDelivery.updateMany({
         where: { id: delivery.id, state: 'leased', rowVersion: processingVersion },

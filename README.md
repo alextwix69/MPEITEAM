@@ -1,6 +1,12 @@
 # Команда.МЭИ
 
+Рабочий каталог на Windows: `C:\MPEITEAM`. Путь без кириллицы позволяет Docker BuildKit собирать локальный context. При переносе зависимости и build artifacts восстанавливаются в новом каталоге через `pnpm install --frozen-lockfile`; старый `node_modules` не переносится.
+
 Runnable MVP slice сервиса проектных команд МЭИ. Помимо application shell реализованы регистрация с четырьмя отдельными согласиями, подтверждение email, повторная отправка письма и `GET /me`. API и worker используют transactional outbox; минимальные доказательства согласий изолированы в отдельной legal database.
+
+TASK-005 добавляет `/login`, `/forgot-password`, `/reset-password`, выход и минимальный `/account`. Сессия проверяется в PostgreSQL, CSRF выдаётся через `/api/v1/auth/csrf`. Ссылка восстановления доставляется через тот же worker/Mailpit; после нового пароля все прежние sessions отозваны, необходимо войти заново. Неподтверждённый или удаляемый аккаунт не получает обычные возможности.
+
+Auth-конфигурация: `AUTH_ALLOWED_ORIGINS` — список точных origins через запятую (локально `http://localhost:8080`, в production — фактический HTTPS origin), `AUTH_RESET_TTL_SECONDS` — срок reset ссылки (по умолчанию 3600), `AUTH_SESSION_TTL_SECONDS` — срок session. Web использует server-only `API_INTERNAL_URL=http://api:3001`; при запуске процессов без Docker задайте `http://127.0.0.1:3001`. Не вычисляйте разрешённый origin из недоверенного Host. CSRF не хранится в localStorage; `__Host-session` остаётся HttpOnly/Secure. Наблюдаемость: `docs/production/auth-observability.md`.
 
 ## Требования
 

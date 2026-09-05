@@ -1,5 +1,6 @@
 import { HealthPanel } from '../components/health-panel';
 import Link from 'next/link';
+import { SessionPanel } from '../components/session-panel';
 
 export default function Home() {
   return (
@@ -16,6 +17,7 @@ export default function Home() {
           версиях.
         </p>
         <HealthPanel />
+        <SessionPanel />
         <Link
           className="mt-6 inline-flex rounded-lg bg-[var(--accent)] px-5 py-3 font-semibold text-white"
           href="/registration"

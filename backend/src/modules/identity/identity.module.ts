@@ -5,6 +5,8 @@ import { IdentityService } from './application/identity.service';
 import { IdentityController } from './http/identity.controller';
 import { IDENTITY_ENVIRONMENT } from './identity.tokens';
 import { RateLimitService } from './infrastructure/rate-limit.service';
+import { APP_GUARD } from '@nestjs/core';
+import { SessionGuard } from './http/session.guard';
 
 @Module({})
 export class IdentityModule {
@@ -16,6 +18,7 @@ export class IdentityModule {
       providers: [
         IdentityService,
         RateLimitService,
+        { provide: APP_GUARD, useClass: SessionGuard },
         { provide: IDENTITY_ENVIRONMENT, useValue: environment },
       ],
       exports: [IdentityService],

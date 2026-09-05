@@ -96,6 +96,13 @@ describe('platform foundation migration', () => {
   });
 
   it('runs the API as a non-superuser without access to the legal database', async () => {
+    const migrations = await apiDatabase.query(
+      'SELECT migration_name FROM public._prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL',
+    );
+    expect(migrations.rows.length).toBeGreaterThanOrEqual(3);
+    await expect(apiDatabase.query('SELECT logs FROM public._prisma_migrations')).rejects.toThrow(
+      /permission denied/u,
+    );
     const role = await apiDatabase.query<{ rolsuper: boolean }>(
       'SELECT rolsuper FROM pg_roles WHERE rolname = current_user',
     );

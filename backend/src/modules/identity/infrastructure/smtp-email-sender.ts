@@ -1,5 +1,9 @@
 import nodemailer, { type Transporter } from 'nodemailer';
-import type { EmailSender, VerificationEmail } from '../application/email-sender.port';
+import type {
+  EmailSender,
+  VerificationEmail,
+  PasswordResetEmail,
+} from '../application/email-sender.port';
 
 export class SmtpEmailSender implements EmailSender {
   readonly #mailer: Transporter;
@@ -23,5 +27,15 @@ export class SmtpEmailSender implements EmailSender {
 
   close(): void {
     this.#mailer.close();
+  }
+
+  async sendPasswordResetEmail(message: PasswordResetEmail): Promise<void> {
+    await this.#mailer.sendMail({
+      from: this.sender,
+      to: message.recipient,
+      subject: 'Восстановление доступа — Команда.МЭИ',
+      text: `Установите новый пароль: ${message.resetUrl}\nЕсли вы не запрашивали восстановление, проигнорируйте письмо.`,
+      messageId: `<${message.eventId}@komanda.mpei>`,
+    });
   }
 }

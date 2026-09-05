@@ -7,6 +7,14 @@ export async function purgeMainRegistrationState(database: PrismaClient, now: Da
   const terminalBefore = new Date(now.getTime() - TERMINAL_TOKEN_RETENTION_MS);
   const completedOutboxBefore = new Date(now.getTime() - COMPLETED_OUTBOX_RETENTION_MS);
   await database.$transaction([
+    database.$executeRaw`
+      DELETE FROM identity.sessions WHERE id IN (
+        SELECT id FROM identity.sessions
+        WHERE (revoked_at IS NOT NULL AND revoked_at <= ${completedOutboxBefore})
+           OR (expires_at <= ${completedOutboxBefore})
+        ORDER BY expires_at, id LIMIT 1000
+      )
+    `,
     database.authToken.deleteMany({
       where: {
         OR: [

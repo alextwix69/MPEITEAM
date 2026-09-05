@@ -78,6 +78,16 @@ export const registrationRequestSchema = z
 
 export const tokenRequestSchema = z.object({ token: z.string().min(32).max(2048) }).strict();
 
+export const loginRequestSchema = z
+  .object({ email: z.email().max(320), password: z.string().min(1).max(128) })
+  .strict();
+export const passwordResetRequestSchema = z.object({ email: z.email().max(320) }).strict();
+export const passwordResetConfirmSchema = tokenRequestSchema.extend({
+  password: z.string().min(12).max(128),
+});
+export type LoginRequest = z.infer<typeof loginRequestSchema>;
+export type PasswordResetConfirm = z.infer<typeof passwordResetConfirmSchema>;
+
 export const emailRequestSchema = z.object({ email: z.email().max(320).optional() }).strict();
 
 export const idempotencyKeySchema = z

@@ -5,10 +5,12 @@ import { useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { apiClient } from '../lib/api/client';
 import { verificationIdempotencyKey } from '../lib/idempotency';
+import { useSession } from './session-provider';
 
 type State = 'pending' | 'success' | 'invalid' | 'waiting' | 'error';
 
 export function VerifyEmail() {
+  const { refresh } = useSession();
   const parameters = useSearchParams();
   const started = useRef(false);
   const [state, setState] = useState<State>('pending');
@@ -43,6 +45,7 @@ export function VerifyEmail() {
             return;
           }
           setState('success');
+          void refresh().catch(() => undefined);
           setMessage('Электронная почта подтверждена. Аккаунт активирован.');
           return;
         }
@@ -60,7 +63,7 @@ export function VerifyEmail() {
         setMessage('Связь прервалась. Безопасно откройте исходную ссылку повторно.');
       }
     }
-  }, [parameters]);
+  }, [parameters, refresh]);
 
   return (
     <div className="mx-auto flex min-h-screen w-full max-w-xl items-center px-5 py-10">

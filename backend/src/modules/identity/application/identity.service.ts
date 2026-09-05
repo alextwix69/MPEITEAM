@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { metrics } from '@opentelemetry/api';
 import { Prisma } from '@prisma/client';
 import argon2 from 'argon2';
+import { timingSafeEqual } from 'node:crypto';
 import { domainToASCII } from 'node:url';
 import { v7 as uuidv7 } from 'uuid';
 import type { ApiEnvironment } from '../../../platform/config/env.schema';
@@ -17,7 +18,12 @@ import {
   sha256,
 } from '../../../platform/security/crypto';
 import { ProfilesService } from '../../profiles';
-import type { EmailRequest, RegistrationRequest } from '../identity.schemas';
+import type {
+  EmailRequest,
+  RegistrationRequest,
+  LoginRequest,
+  PasswordResetConfirm,
+} from '../identity.schemas';
 import { IDENTITY_ENVIRONMENT } from '../identity.tokens';
 import {
   consentDocumentTypes,
@@ -40,6 +46,14 @@ const ARGON2_PARAMETERS = {
 const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
 const EMAIL_CONSUMER = 'identity.verification-email';
 const LEGAL_CONSUMER = 'compliance.consent-evidence';
+const authCounter = metrics
+  .getMeter('komanda-mpei-identity')
+  .createCounter('identity.auth.commands');
+const csrfCounter = metrics
+  .getMeter('komanda-mpei-identity')
+  .createCounter('identity.csrf.failures');
+// Constant-cost verification for an unknown account, without a reusable credential.
+const dummyPasswordHash = argon2.hash(randomSecret(), ARGON2_PARAMETERS);
 const verificationAge = metrics
   .getMeter('komanda-mpei-identity')
   .createHistogram('identity.email_verification.age', { unit: 'ms' });
@@ -294,12 +308,13 @@ export class IdentityService {
     rawToken: string,
     idempotencyKey: string,
     ipAddress: string,
+    previousSession?: string,
   ): Promise<CommandResult<SessionView>> {
     const tokenHash = sha256(rawToken);
     const token = await this.database.authToken.findUnique({
       where: { tokenHash: databaseBytes(tokenHash) },
     });
-    if (!token) this.invalidToken();
+    if (!token || token.purpose !== 'email_verification') this.invalidToken();
     verificationAge.record(Math.max(0, Date.now() - token.createdAt.getTime()));
 
     const requestHash = sha256(canonicalJson({ token: rawToken }));
@@ -341,6 +356,11 @@ export class IdentityService {
         };
       }
 
+      await this.lockAccount(transaction, token.accountId);
+      const currentAccount = await transaction.account.findUnique({
+        where: { id: token.accountId },
+      });
+      if (currentAccount?.state !== 'unverified') this.invalidToken();
       const freshToken = await transaction.authToken.findUnique({ where: { id: token.id } });
       if (!freshToken || freshToken.consumedAt || freshToken.expiresAt <= new Date()) {
         this.invalidToken();
@@ -384,9 +404,6 @@ export class IdentityService {
       });
       if (consumed.count !== 1) this.invalidToken();
 
-      const sessionSecret = randomSecret();
-      const csrfSecret = randomSecret();
-      const expiresAt = new Date(Date.now() + this.environment.AUTH_SESSION_TTL_SECONDS * 1000);
       const account = await transaction.account.update({
         where: { id: token.accountId },
         data: {
@@ -395,21 +412,11 @@ export class IdentityService {
           rowVersion: { increment: 1 },
         },
       });
-      await transaction.session.create({
-        data: {
-          id: uuidv7(),
-          accountId: account.id,
-          sessionHash: databaseBytes(sha256(sessionSecret)),
-          csrfSecretHash: databaseBytes(sha256(csrfSecret)),
-          expiresAt,
-          lastSeenAt: new Date(),
-        },
-      });
-      const body: SessionView = {
-        accountId: account.id,
-        accountState: account.state,
-        expiresAt: expiresAt.toISOString(),
-      };
+      const { body, sessionSecret } = await this.issueSession(
+        transaction,
+        account,
+        previousSession,
+      );
       await this.completeIdempotency(
         transaction,
         reservation.id,
@@ -535,9 +542,13 @@ export class IdentityService {
       state: account.state,
       emailVerified: account.emailVerifiedAt !== null,
       capabilities:
-        account.state === 'active'
+        account.state === 'active' &&
+        account.emailVerifiedAt &&
+        (await this.hasConsents(account.id))
           ? ['profile.read', 'profile.edit']
-          : ['email.verify', 'email.verification.resend'],
+          : account.state === 'unverified'
+            ? ['email.verify', 'email.verification.resend']
+            : [],
       ...(account.deletionIrreversibleAt
         ? { deletionIrreversibleAt: account.deletionIrreversibleAt.toISOString() }
         : {}),
@@ -550,7 +561,383 @@ export class IdentityService {
       where: { sessionHash: databaseBytes(sha256(sessionSecret)) },
     });
     if (!session || session.revokedAt || session.expiresAt <= new Date()) return undefined;
-    return this.database.account.findUnique({ where: { id: session.accountId } });
+    const account = await this.database.account.findUnique({ where: { id: session.accountId } });
+    return account?.state === 'deleted' ? undefined : account;
+  }
+
+  private async lockAccount(
+    transaction: Prisma.TransactionClient,
+    accountId: string,
+  ): Promise<void> {
+    await transaction.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${accountId}::text, 0))::text AS locked`;
+  }
+
+  private csrfToken(secret: string, sessionId: string): string {
+    return hmacSha256(secret, `csrf:v1:${sessionId}`).toString('base64url');
+  }
+
+  private async issueSession(
+    transaction: Prisma.TransactionClient,
+    account: { id: string; state: SessionView['accountState'] },
+    previousSession?: string,
+  ) {
+    if (previousSession) {
+      await transaction.session.updateMany({
+        where: {
+          sessionHash: databaseBytes(sha256(previousSession)),
+          accountId: account.id,
+          revokedAt: null,
+        },
+        data: { revokedAt: new Date() },
+      });
+    }
+    const id = uuidv7();
+    const sessionSecret = randomSecret();
+    const expiresAt = new Date(Date.now() + this.environment.AUTH_SESSION_TTL_SECONDS * 1000);
+    await transaction.session.create({
+      data: {
+        id,
+        accountId: account.id,
+        sessionHash: databaseBytes(sha256(sessionSecret)),
+        csrfSecretHash: databaseBytes(sha256(this.csrfToken(sessionSecret, id))),
+        expiresAt,
+        lastSeenAt: new Date(),
+      },
+    });
+    return {
+      body: {
+        accountId: account.id,
+        accountState: account.state,
+        expiresAt: expiresAt.toISOString(),
+      } satisfies SessionView,
+      sessionSecret,
+    };
+  }
+
+  private sessionReplay(reservation: IdempotencyReservation): CommandResult<SessionView> {
+    if (!reservation.replay?.secret) throw new Error('IDEMPOTENCY_SECRET_MISSING');
+    return {
+      body: reservation.replay.body as SessionView,
+      replayed: true,
+      sessionSecret: decryptSecret(
+        this.environment.AUTH_TOKEN_ENCRYPTION_KEY,
+        reservation.replay.secret,
+      ),
+    };
+  }
+
+  async createSession(
+    input: LoginRequest,
+    key: string | undefined,
+    ip: string,
+    previousSession?: string,
+  ): Promise<CommandResult<SessionView>> {
+    const email = normalizeEmail(input.email);
+    const account = await this.database.account.findUnique({
+      where: { emailNormalized: email },
+      include: { credential: true },
+    });
+    const scope = account
+      ? { actorAccountId: account.id }
+      : { publicSubjectHash: hmacSha256(this.environment.IDEMPOTENCY_HMAC_KEY, email) };
+    const hash = hmacSha256(this.environment.IDEMPOTENCY_HMAC_KEY, canonicalJson(input));
+    if (key) {
+      const replay = await this.lookupIdempotency(scope, 'POST /auth/sessions', key, hash);
+      if (replay?.replay) return this.sessionReplay(replay);
+    }
+    await Promise.all([
+      this.rateLimit.consume('login-ip', ip),
+      this.rateLimit.consume('login-email', email),
+    ]);
+    const passwordHash = account?.credential?.passwordHash ?? (await dummyPasswordHash);
+    const valid = await argon2.verify(passwordHash, input.password);
+    if (!valid || !account?.credential) this.invalidCredentials();
+    return this.database.$transaction(async (transaction) => {
+      await this.lockAccount(transaction, account.id);
+      const reservation = key
+        ? await this.reserveIdempotency(transaction, scope, 'POST /auth/sessions', key, hash)
+        : undefined;
+      if (reservation?.replay) return this.sessionReplay(reservation);
+      const fresh = await transaction.account.findUnique({
+        where: { id: account.id },
+        include: { credential: true },
+      });
+      if (!fresh?.credential || fresh.credential.passwordHash !== passwordHash)
+        this.invalidCredentials();
+      if (fresh.state === 'deleted')
+        throw new ApplicationError('ACCOUNT_DELETED', 'Аккаунт удалён.', 401);
+      const result = await this.issueSession(transaction, fresh, previousSession);
+      await transaction.account.update({
+        where: { id: fresh.id },
+        data: { lastLoginAt: new Date() },
+      });
+      if (reservation)
+        await this.completeIdempotency(
+          transaction,
+          reservation.id,
+          200,
+          result.body,
+          account.id,
+          encryptSecret(this.environment.AUTH_TOKEN_ENCRYPTION_KEY, result.sessionSecret),
+        );
+      return { ...result, replayed: false };
+    });
+  }
+
+  async getCsrfToken(secret: string | undefined): Promise<{ csrfToken: string }> {
+    await this.authorizeSession(secret);
+    const session = await this.database.session.findUniqueOrThrow({
+      where: { sessionHash: databaseBytes(sha256(secret!)) },
+    });
+    const csrfToken = this.csrfToken(secret!, session.id);
+    // Lazy upgrade of registration-era sessions. Deterministic across tabs and API instances.
+    const updated = await this.database.session.updateMany({
+      where: { id: session.id, revokedAt: null, expiresAt: { gt: new Date() } },
+      data: { csrfSecretHash: databaseBytes(sha256(csrfToken)), lastSeenAt: new Date() },
+    });
+    if (!updated.count) this.authRequired();
+    return { csrfToken };
+  }
+
+  async authorizeSession(secret: string | undefined, active = false): Promise<CurrentAccount> {
+    const account = await this.getCurrentAccount(secret);
+    if (active) {
+      if (account.state === 'unverified')
+        throw new ApplicationError('ACCOUNT_UNVERIFIED', 'Подтвердите электронную почту.', 403);
+      if (account.state === 'deleting')
+        throw new ApplicationError('ACCOUNT_DELETING', 'Аккаунт удаляется. Доступ ограничен.', 403);
+      if (!account.emailVerified || !account.capabilities.includes('profile.read'))
+        throw new ApplicationError(
+          'CONSENT_REQUIRED',
+          'Для продолжения необходимы действующие обязательные согласия.',
+          403,
+        );
+    }
+    return account;
+  }
+
+  private async hasConsents(accountId: string): Promise<boolean> {
+    return (
+      (await this.database.consentStatus.count({
+        where: { accountId, acceptedAt: { not: null }, revokedAt: null },
+      })) === consentDocumentTypes.length
+    );
+  }
+
+  private validateOrigin(origin: string | undefined): void {
+    if (!origin || !this.environment.AUTH_ALLOWED_ORIGINS.includes(origin)) this.csrfFailed();
+  }
+
+  async validateCsrf(
+    secret: string | undefined,
+    origin: string | undefined,
+    token: string | undefined,
+  ): Promise<void> {
+    this.validateOrigin(origin);
+    await this.authorizeSession(secret);
+    const session = await this.database.session.findUnique({
+      where: { sessionHash: databaseBytes(sha256(secret!)) },
+    });
+    if (!session || session.revokedAt || session.expiresAt <= new Date()) this.authRequired();
+    if (!token || !/^[A-Za-z0-9_-]{43}$/u.test(token)) this.csrfFailed();
+    if (
+      !timingSafeEqual(sha256(token), sha256(this.csrfToken(secret!, session.id))) ||
+      !timingSafeEqual(Buffer.from(session.csrfSecretHash), sha256(token))
+    )
+      this.csrfFailed();
+  }
+
+  async deleteCurrentSession(
+    secret: string | undefined,
+    origin: string | undefined,
+    csrf: string | undefined,
+  ): Promise<void> {
+    this.validateOrigin(origin);
+    if (!secret || !(await this.accountForSession(secret))) return;
+    await this.validateCsrf(secret, origin, csrf);
+    await this.database.session.updateMany({
+      where: { sessionHash: databaseBytes(sha256(secret)), revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+  }
+
+  async requestPasswordReset(
+    input: { email: string },
+    key: string,
+    ip: string,
+  ): Promise<CommandResult<{ accepted: true }>> {
+    const email = normalizeEmail(input.email);
+    const account = await this.database.account.findUnique({ where: { emailNormalized: email } });
+    const scope = account
+      ? { actorAccountId: account.id }
+      : { publicSubjectHash: hmacSha256(this.environment.IDEMPOTENCY_HMAC_KEY, email) };
+    const requestHash = sha256(canonicalJson(input));
+    const route = 'POST /auth/password-resets';
+    const body = { accepted: true as const };
+    const replay = await this.lookupIdempotency(scope, route, key, requestHash);
+    if (replay?.replay) return { body, replayed: true };
+    await Promise.all([
+      this.rateLimit.consume('reset-ip', ip),
+      this.rateLimit.consume('reset-email', email),
+    ]);
+    return this.database.$transaction(async (transaction) => {
+      if (account) await this.lockAccount(transaction, account.id);
+      const reservation = await this.reserveIdempotency(
+        transaction,
+        scope,
+        route,
+        key,
+        requestHash,
+      );
+      if (reservation.replay) return { body, replayed: true };
+      const fresh = account
+        ? await transaction.account.findUnique({ where: { id: account.id } })
+        : null;
+      if (fresh && ['active', 'unverified'].includes(fresh.state)) {
+        const latest = await transaction.authToken.findFirst({
+          where: { accountId: fresh.id, purpose: 'password_reset' },
+          orderBy: { createdAt: 'desc' },
+        });
+        const now = new Date();
+        if (
+          !latest ||
+          latest.createdAt.getTime() <=
+            now.getTime() - this.environment.RESEND_COOLDOWN_SECONDS * 1000
+        ) {
+          const rawToken = randomSecret();
+          await transaction.authToken.updateMany({
+            where: { accountId: fresh.id, purpose: 'password_reset', consumedAt: null },
+            data: { consumedAt: now },
+          });
+          await transaction.authToken.create({
+            data: {
+              id: uuidv7(),
+              accountId: fresh.id,
+              purpose: 'password_reset',
+              tokenHash: databaseBytes(sha256(rawToken)),
+              expiresAt: new Date(now.getTime() + this.environment.AUTH_RESET_TTL_SECONDS * 1000),
+            },
+          });
+          await this.createOutboxEvent(transaction, {
+            eventId: uuidv7(),
+            eventType: 'identity.password-reset.requested',
+            accountId: fresh.id,
+            occurredAt: now,
+            payload: {
+              encryptedToken: encryptSecret(
+                this.environment.AUTH_TOKEN_ENCRYPTION_KEY,
+                rawToken,
+              ).toString('base64'),
+            },
+            consumers: ['identity.password-reset-email'],
+          });
+        }
+      }
+      await this.completeIdempotency(transaction, reservation.id, 202, body, account?.id);
+      return { body, replayed: false };
+    });
+  }
+
+  async confirmPasswordReset(
+    input: PasswordResetConfirm,
+    key: string,
+    ip: string,
+  ): Promise<CommandResult<null>> {
+    const token = await this.database.authToken.findUnique({
+      where: { tokenHash: databaseBytes(sha256(input.token)) },
+    });
+    if (!token || token.purpose !== 'password_reset') {
+      await this.rateLimit.consume('reset-confirm-ip', ip);
+      this.invalidToken();
+    }
+    const scope = { actorAccountId: token.accountId };
+    const route = 'POST /auth/password-resets/confirm';
+    const requestHash = sha256(canonicalJson(input));
+    const replay = await this.lookupIdempotency(scope, route, key, requestHash);
+    if (replay?.replay) return { body: null, replayed: true };
+    await Promise.all([
+      this.rateLimit.consume('reset-confirm-ip', ip),
+      this.rateLimit.consume('reset-confirm-account', token.accountId),
+    ]);
+    const credential = await this.database.credential.findUnique({
+      where: { accountId: token.accountId },
+    });
+    if (!credential || token.consumedAt || token.expiresAt <= new Date()) this.invalidToken();
+    const reused = await argon2.verify(credential.passwordHash, input.password);
+    const passwordHash = reused ? undefined : await argon2.hash(input.password, ARGON2_PARAMETERS);
+    return this.database.$transaction(async (transaction) => {
+      await this.lockAccount(transaction, token.accountId);
+      const reservation = await this.reserveIdempotency(
+        transaction,
+        scope,
+        route,
+        key,
+        requestHash,
+      );
+      if (reservation.replay) return { body: null, replayed: true };
+      const account = await transaction.account.findUnique({
+        where: { id: token.accountId },
+        include: { credential: true },
+      });
+      const fresh = await transaction.authToken.findUnique({ where: { id: token.id } });
+      if (
+        !account ||
+        !['active', 'unverified'].includes(account.state) ||
+        account.credential?.passwordHash !== credential.passwordHash ||
+        !fresh ||
+        fresh.consumedAt ||
+        fresh.expiresAt <= new Date()
+      )
+        this.invalidToken();
+      if (reused)
+        throw new ApplicationError(
+          'PASSWORD_REUSED',
+          'Новый пароль должен отличаться от текущего.',
+          409,
+        );
+      const now = new Date();
+      await transaction.credential.update({
+        where: { accountId: account.id },
+        data: {
+          passwordHash: passwordHash!,
+          argon2Parameters: {
+            version: 1,
+            algorithm: 'argon2id',
+            memoryCost: ARGON2_PARAMETERS.memoryCost,
+            timeCost: ARGON2_PARAMETERS.timeCost,
+            parallelism: 1,
+            hashLength: 32,
+          },
+          passwordChangedAt: now,
+        },
+      });
+      await transaction.authToken.updateMany({
+        where: { accountId: account.id, purpose: 'password_reset', consumedAt: null },
+        data: { consumedAt: now },
+      });
+      await transaction.session.updateMany({
+        where: { accountId: account.id, revokedAt: null },
+        data: { revokedAt: now },
+      });
+      await this.completeIdempotency(transaction, reservation.id, 204, Prisma.JsonNull, account.id);
+      return { body: null, replayed: false };
+    });
+  }
+
+  recordAuthResult(operation: string, result: string): void {
+    authCounter.add(1, { operation, result });
+  }
+
+  private invalidCredentials(): never {
+    throw new ApplicationError('INVALID_CREDENTIALS', 'Неверная почта или пароль.', 401);
+  }
+  private csrfFailed(): never {
+    csrfCounter.add(1);
+    throw new ApplicationError(
+      'CSRF_FAILED',
+      'Проверка безопасности не пройдена. Обновите страницу.',
+      403,
+    );
   }
 
   private async reserveIdempotency(
@@ -561,6 +948,16 @@ export class IdentityService {
     requestHash: Buffer,
   ): Promise<IdempotencyReservation> {
     const id = uuidv7();
+    await transaction.idempotencyRecord.deleteMany({
+      where: {
+        route,
+        key,
+        expiresAt: { lte: new Date() },
+        ...(scope.actorAccountId
+          ? { actorAccountId: scope.actorAccountId }
+          : { publicSubjectHash: databaseBytes(scope.publicSubjectHash!) }),
+      },
+    });
     const inserted = scope.actorAccountId
       ? await transaction.$executeRaw`
           INSERT INTO platform.idempotency_records
@@ -582,6 +979,7 @@ export class IdentityService {
       where: {
         route,
         key,
+        expiresAt: { gt: new Date() },
         ...(scope.actorAccountId
           ? { actorAccountId: scope.actorAccountId }
           : { publicSubjectHash: databaseBytes(scope.publicSubjectHash!) }),
@@ -611,6 +1009,7 @@ export class IdentityService {
       where: {
         route,
         key,
+        expiresAt: { gt: new Date() },
         ...(scope.actorAccountId
           ? { actorAccountId: scope.actorAccountId }
           : { publicSubjectHash: databaseBytes(scope.publicSubjectHash!) }),

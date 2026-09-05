@@ -2,6 +2,18 @@
 
 Документ задаёт порядок диагностики. Конкретные команды и provider-консоли добавляются после выбора production-платформы; секреты и персональные данные в runbook не записываются.
 
+## Вход, CSRF и восстановление доступа (TASK-005)
+
+Dashboard/alerts: `auth-observability.md`. При `RATE_LIMIT_UNAVAILABLE` проверить Redis и connectivity API; новые auth commands намеренно возвращают `503`, process-local обход запрещён. В локальном стеке проверить `docker compose ps redis api` и readiness. После восстановления выполнить вход синтетическим аккаунтом; завершённые idempotency responses допускают replay без нового эффекта.
+
+При `CSRF_FAILED` сверить точный browser Origin с `AUTH_ALLOWED_ORIGINS`, HTTPS и cookie `Secure/HttpOnly/SameSite=Lax/Path=/`, затем выполнить `/me` → `/auth/csrf` в той же session. Не выводить cookie/token в журнал и не отключать проверку. CSRF другой сессии недействителен; после rotation требуется новый bootstrap. Повтор logout без живой session требует допустимый Origin и возвращает `204`.
+
+При задержке reset письма проверить worker, SMTP/Mailpit, `identity.password-reset-email` deliveries и oldest age. После восстановления worker завершает pending/retry через существующую reconciliation; dead-letter replay — по процедуре outbox ниже. Истёкшие/consumed tokens не отправляются повторно: попросить пользователя запросить новую ссылку после cooldown. Не выпускать token вручную через SQL и не менять пароль в обход email proof. Сбой после SMTP send может дать повтор письма с тем же Message-ID, но не повторную смену пароля.
+
+После подозреваемого stale access проверить результат `/me` старой session после logout/reset на каждом API instance; ответ должен быть `401`. Idempotency replay старого login/verification не снимает revoke и сохраняет исходный expiry. Смена пароля инвалидирует все прежние sessions, обычный logout — текущую. `deleting` допускает только ограниченный bootstrap/выход; UI восстановления аккаунта появится в этапе 18.
+
+Worker запускает retention sweep раз в час: terminal tokens — 24 часа, sessions — до 30 суток после revoke/expiry; session delete выполняется batches по 1000 с отдельными SQL indexes. При большом backlog контролировать длительность очистки и возраст terminal rows; до production подобрать частоту/ёмкость так, чтобы retention deadlines выполнялись. Локальный fresh clone использует существующий `pnpm local:up`; старые volumes не пересоздают роли из init script — при несовпадении схемы окружения использовать отдельный тестовый Compose project, не удалять пользовательский volume.
+
 ## Общий порядок инцидента
 
 1. Подтвердить alert по dashboard и определить затронутый journey, время начала и correlation IDs.
