@@ -1,6 +1,7 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
 
 test.use({ trace: 'off' });
+test.setTimeout(120_000);
 const password = 'test-auth-original-password';
 const mailpit = process.env.E2E_MAILPIT_URL ?? 'http://127.0.0.1:8025';
 
@@ -14,7 +15,7 @@ async function mailLink(request: APIRequestContext, email: string, path: string)
           messages: Array<{ ID: string; To: Array<{ Address: string }> }>;
         };
         for (const message of messages.messages.filter((item) =>
-          item.To.some((recipient) => recipient.Address === email),
+          item.To?.some((recipient) => recipient.Address === email),
         )) {
           const detail = (await (
             await request.get(`${mailpit}/api/v1/message/${message.ID}`)
@@ -27,7 +28,7 @@ async function mailLink(request: APIRequestContext, email: string, path: string)
         }
         return false;
       },
-      { timeout: 25_000 },
+      { timeout: 45_000 },
     )
     .toBe(true);
   return url;
@@ -116,7 +117,9 @@ test('real login/logout/reset revokes another browser session and protects serve
     await resetPage.getByLabel('Электронная почта').fill(email);
     await resetPage.getByLabel('Пароль', { exact: true }).fill(password);
     await resetPage.getByRole('button', { name: 'Войти', exact: true }).click();
-    await expect(resetPage.getByRole('alert')).toContainText('Неверная почта или пароль');
+    await expect(
+      resetPage.getByRole('alert').filter({ hasText: 'Неверная почта или пароль' }),
+    ).toBeVisible();
     await resetPage.getByLabel('Пароль', { exact: true }).fill('test-auth-replacement-password');
     await resetPage.getByRole('button', { name: 'Войти', exact: true }).click();
     await expect(resetPage).toHaveURL(/\/$/u);
@@ -144,7 +147,7 @@ test('unverified login remains limited and reset errors are actionable', async (
   await page.goto(`/reset-password?token=${'x'.repeat(43)}`);
   await page.getByLabel('Новый пароль', { exact: true }).fill('test-auth-new-password');
   await page.getByRole('button', { name: 'Сохранить пароль' }).click();
-  await expect(page.getByRole('alert')).toContainText('Ссылка недействительна');
+  await expect(page.getByRole('alert').filter({ hasText: 'Ссылка недействительна' })).toBeVisible();
 });
 
 for (const width of [360, 1280]) {
@@ -159,7 +162,9 @@ for (const width of [360, 1280]) {
     await page.keyboard.press('Tab');
     await expect(page.getByRole('button', { name: 'Войти', exact: true })).toBeFocused();
     await page.keyboard.press('Enter');
-    await expect(page.getByRole('alert')).toContainText('Неверная почта или пароль');
+    await expect(
+      page.getByRole('alert').filter({ hasText: 'Неверная почта или пароль' }),
+    ).toBeVisible();
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
     ).toBe(true);

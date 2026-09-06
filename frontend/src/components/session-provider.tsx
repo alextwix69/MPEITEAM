@@ -41,7 +41,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     refetchInterval: 30_000,
   });
   const identity = query.isError ? undefined : sessionCacheIdentity(query.data?.account);
+  const previousIdentity = useRef(identity);
   useEffect(() => {
+    if (previousIdentity.current === identity) return;
+    previousIdentity.current = identity;
     void client.cancelQueries({ predicate: (query) => query.queryKey[0] !== 'session' });
     client.removeQueries({ predicate: (query) => query.queryKey[0] !== 'session' });
   }, [client, identity]);

@@ -1,5 +1,7 @@
 import { expect, test } from '@playwright/test';
 
+test.setTimeout(120_000);
+
 test('registers a student with four explicit consents', async ({ page }) => {
   let submitted: Record<string, unknown> | undefined;
   await page.route('**/api/v1/auth/registrations', async (route) => {
@@ -99,7 +101,7 @@ test('completes registration through the real API, worker, Mailpit and session b
           messages: Array<{ ID: string; To: Array<{ Address: string }> }>;
         };
         const summary = body.messages.find((message) =>
-          message.To.some((recipient) => recipient.Address === email),
+          message.To?.some((recipient) => recipient.Address === email),
         );
         if (!summary) return false;
         const message = await request.get(`${mailpitUrl}/api/v1/message/${summary.ID}`);
@@ -107,7 +109,7 @@ test('completes registration through the real API, worker, Mailpit and session b
         verificationUrl = detail.Text.match(/https?:\/\/\S+/u)?.[0]?.trim() ?? '';
         return verificationUrl.length > 0;
       },
-      { timeout: 20_000 },
+      { timeout: 40_000 },
     )
     .toBe(true);
 

@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 test('renders the Russian accessible shell and readiness state', async ({ page }) => {
+  await page.route('**/api/v1/me', (route) => route.fulfill({ status: 401, json: {} }));
   await page.route('**/health/ready', async (route) => {
     await route.fulfill({
       contentType: 'application/json',
@@ -31,6 +32,7 @@ test('shows a recoverable error and retries from keyboard when API is unavailabl
   page,
 }) => {
   let calls = 0;
+  await page.route('**/api/v1/me', (route) => route.fulfill({ status: 401, json: {} }));
   await page.route('**/health/ready', async (route) => {
     calls += 1;
     await route.abort('failed');
