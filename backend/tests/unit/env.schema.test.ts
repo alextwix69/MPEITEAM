@@ -32,6 +32,23 @@ describe('environment validation', () => {
 
     expect(api.API_DATABASE_URL).toContain('connection_limit=5');
     expect(worker.WORKER_DATABASE_URL).toContain('connection_limit=3');
+    expect(api.METRICS_HOST).toBe('127.0.0.1');
+    expect(api.METRICS_PORT).toBe(9464);
+    expect(worker.METRICS_PORT).toBe(9465);
+  });
+
+  it.each([
+    { METRICS_HOST: 'https://public.invalid' },
+    { METRICS_PORT: '0' },
+    { METRICS_PORT: '65536' },
+  ])('rejects an invalid metrics listener %j', (metrics) => {
+    expect(() =>
+      parseApiEnvironment({
+        ...common,
+        API_DATABASE_URL: 'postgresql://user:pass@localhost/api?connection_limit=2',
+        ...metrics,
+      }),
+    ).toThrow('METRICS_');
   });
 
   it('fails before startup when a required variable is missing', () => {

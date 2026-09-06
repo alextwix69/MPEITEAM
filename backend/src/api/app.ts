@@ -7,10 +7,12 @@ import { requestContextMiddleware } from '../platform/http/request-context';
 import type { DependencyProbe } from '../platform/health/health.types';
 import { RuntimeDependencies } from '../platform/health/runtime-dependencies';
 import { JsonLogger } from '../platform/observability/json-logger';
+import type { MetricsRuntime } from '../platform/observability/metrics-runtime';
 
 export interface ApiApplicationOptions {
   probe?: DependencyProbe;
   logger?: JsonLogger;
+  metricsRuntime?: MetricsRuntime;
 }
 
 export async function createApiApplication(
@@ -19,10 +21,13 @@ export async function createApiApplication(
 ): Promise<INestApplication> {
   const logger = options.logger ?? new JsonLogger('api', environment.LOG_LEVEL);
   const probe = options.probe ?? new RuntimeDependencies(environment);
-  const application = await NestFactory.create(AppModule.register(probe, environment), {
-    bufferLogs: true,
-    logger,
-  });
+  const application = await NestFactory.create(
+    AppModule.register(probe, environment, options.metricsRuntime),
+    {
+      bufferLogs: true,
+      logger,
+    },
+  );
 
   application.getHttpAdapter().getInstance().set('trust proxy', environment.TRUST_PROXY_HOPS);
 

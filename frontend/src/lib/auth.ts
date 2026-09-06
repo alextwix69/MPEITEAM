@@ -12,6 +12,21 @@ export const currentAccountSchema = z.object({
 });
 export type CurrentAccount = z.infer<typeof currentAccountSchema>;
 
+export function sessionCacheIdentity(
+  account: CurrentAccount | null | undefined,
+): string | undefined {
+  if (!account) return undefined;
+  return JSON.stringify({
+    id: account.id,
+    formalRole: account.formalRole,
+    systemRole: account.systemRole,
+    state: account.state,
+    emailVerified: account.emailVerified,
+    capabilities: [...account.capabilities].sort(),
+    deletionIrreversibleAt: account.deletionIrreversibleAt ?? null,
+  });
+}
+
 function unsafePath(value: string): boolean {
   return (
     value.includes('\\') || Array.from(value).some((character) => character.charCodeAt(0) <= 32)

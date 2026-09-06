@@ -1,11 +1,16 @@
 import 'reflect-metadata';
-import { createApiApplication } from './app';
 import { parseApiEnvironment } from '../platform/config/env.schema';
 import { RuntimeDependencies } from '../platform/health/runtime-dependencies';
 import { JsonLogger, sanitizeLogMessage } from '../platform/observability/json-logger';
+import { MetricsRuntime } from '../platform/observability/metrics-runtime';
+
+let metricsRuntime: MetricsRuntime | undefined;
 
 async function bootstrap(): Promise<void> {
   const environment = parseApiEnvironment(process.env);
+  metricsRuntime = await MetricsRuntime.start(environment, 'api');
+  // Instruments are created at module load time, after the global SDK is ready.
+  const { createApiApplication } = await import('./app');
   const logger = new JsonLogger('api', environment.LOG_LEVEL);
   const runtime = new RuntimeDependencies(environment);
   const startedAt = performance.now();
@@ -33,12 +38,17 @@ async function bootstrap(): Promise<void> {
       latencyMs: Math.round((performance.now() - startedAt) * 100) / 100,
     })
     .info('Стартовая проверка зависимостей API завершена.');
-  const application = await createApiApplication(environment, { logger, probe: runtime });
+  const application = await createApiApplication(environment, {
+    logger,
+    probe: runtime,
+    metricsRuntime,
+  });
   await application.listen(environment.API_PORT, '0.0.0.0');
   logger.log(`API принимает соединения на порту ${environment.API_PORT}.`, 'Bootstrap');
 }
 
-bootstrap().catch((error: unknown) => {
+bootstrap().catch(async (error: unknown) => {
+  await metricsRuntime?.onApplicationShutdown();
   process.stderr.write(`${sanitizeLogMessage(error instanceof Error ? error.message : error)}\n`);
   process.exitCode = 1;
 });

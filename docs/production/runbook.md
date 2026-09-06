@@ -4,6 +4,8 @@
 
 ## Вход, CSRF и восстановление доступа (TASK-005)
 
+При `AuthMetricsUnavailable` проверить private scrape `api:9464/metrics` и `worker:9465/metrics`, bind `METRICS_HOST`, порт и доступ collector к каждому instance. Не открывать endpoint через public proxy. При `METRICS_START_FAILED` проверить занятый порт. После восстановления подтвердить `up=1`; исторические counters после рестарта могут сброситься, текущий PostgreSQL backlog/DLQ должен восстановиться. Alert rules и dashboard находятся в `infra/observability`; порядок применения описан в `auth-observability.md`.
+
 Dashboard/alerts: `auth-observability.md`. При `RATE_LIMIT_UNAVAILABLE` проверить Redis и connectivity API; новые auth commands намеренно возвращают `503`, process-local обход запрещён. В локальном стеке проверить `docker compose ps redis api` и readiness. После восстановления выполнить вход синтетическим аккаунтом; завершённые idempotency responses допускают replay без нового эффекта.
 
 При `CSRF_FAILED` сверить точный browser Origin с `AUTH_ALLOWED_ORIGINS`, HTTPS и cookie `Secure/HttpOnly/SameSite=Lax/Path=/`, затем выполнить `/me` → `/auth/csrf` в той же session. Не выводить cookie/token в журнал и не отключать проверку. CSRF другой сессии недействителен; после rotation требуется новый bootstrap. Повтор logout без живой session требует допустимый Origin и возвращает `204`.

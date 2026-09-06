@@ -16,6 +16,7 @@ import { decryptSecret } from '../platform/security/crypto';
 import type { JsonLogger } from '../platform/observability/json-logger';
 import { WORKER_ENVIRONMENT, WORKER_LOGGER } from './worker.tokens';
 import { purgeMainRegistrationState } from './registration-retention';
+import { recordOutboxSnapshot, type OutboxMetricRow } from './outbox-metrics';
 
 const QUEUE_NAME = 'platform-outbox';
 const MAX_ATTEMPTS = 5;
@@ -307,14 +308,21 @@ export class OutboxWorkerService implements OnApplicationBootstrap, OnApplicatio
   }
 
   async #recordOldestPendingAge(): Promise<void> {
-    const rows = await this.#database.$queryRaw<Array<{ ageMs: number | bigint | null }>>`
-      SELECT EXTRACT(EPOCH FROM (now() - MIN(event.occurred_at))) * 1000 AS "ageMs"
+    const rows = await this.#database.$queryRaw<OutboxMetricRow[]>`
+      SELECT delivery.consumer, delivery.state, COUNT(*) AS count,
+             (EXTRACT(EPOCH FROM (now() - MIN(event.occurred_at))) * 1000)::double precision AS "ageMs"
       FROM platform.outbox_deliveries AS delivery
       JOIN platform.outbox_events AS event ON event.id = delivery.event_id
-      WHERE delivery.state IN ('pending', 'leased')
+      WHERE delivery.state IN ('pending', 'leased', 'dead_letter')
+      GROUP BY delivery.consumer, delivery.state
     `;
-    const age = rows[0]?.ageMs;
-    if (age !== null && age !== undefined) oldestPendingAge.record(Number(age));
+    recordOutboxSnapshot(rows);
+    oldestPendingAge.record(
+      Math.max(
+        0,
+        ...rows.filter((row) => row.state !== 'dead_letter').map((row) => Number(row.ageMs ?? 0)),
+      ),
+    );
   }
 
   async #cleanupIfDue(now = new Date()): Promise<void> {

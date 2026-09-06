@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { authFormSchema, currentAccountSchema, safeReturnPath } from '../src/lib/auth';
+import {
+  authFormSchema,
+  currentAccountSchema,
+  safeReturnPath,
+  sessionCacheIdentity,
+} from '../src/lib/auth';
 
 describe('auth forms and navigation', () => {
   it('uses the contract password constraints for each form', () => {
@@ -40,5 +45,23 @@ describe('auth forms and navigation', () => {
     expect(value.state).toBe('future');
     expect(value.capabilities).toEqual([]);
     expect(value).not.toHaveProperty('extra');
+  });
+  it('changes the cache identity when same-account authorization changes', () => {
+    const account = currentAccountSchema.parse({
+      id: '0198a8e7-5132-7c8b-a566-0242ac120002',
+      formalRole: 'student',
+      systemRole: 'user',
+      state: 'active',
+      emailVerified: true,
+      capabilities: ['profile.read'],
+      createdAt: '2026-09-05T10:00:00Z',
+    });
+    const stateChanged = { ...account, state: 'deleting' };
+    const capabilitiesChanged = { ...account, capabilities: [] };
+    expect(sessionCacheIdentity(stateChanged)).not.toBe(sessionCacheIdentity(account));
+    expect(sessionCacheIdentity(capabilitiesChanged)).not.toBe(sessionCacheIdentity(account));
+    expect(
+      sessionCacheIdentity({ ...account, capabilities: ['profile.read', 'profile.edit'] }),
+    ).toBe(sessionCacheIdentity({ ...account, capabilities: ['profile.edit', 'profile.read'] }));
   });
 });

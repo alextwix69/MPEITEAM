@@ -1,6 +1,6 @@
 # Наблюдаемость регистрации
 
-Статус: vendor-neutral dashboard/alert contract. Production exporter и получатели alerts выбираются перед публичным запуском.
+Статус: dashboard/alert contract регистрации. TASK-005 подключил общий OpenTelemetry SDK и private Prometheus exporter для API и worker; существующие registration instruments также экспортируются. Настройка collector и production-адресатов описана в `auth-observability.md`. Этот документ не утверждает наличие применённого registration dashboard в managed tenant.
 
 ## Dashboard
 

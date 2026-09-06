@@ -3,7 +3,7 @@
 import { createContext, useContext, useEffect, useRef, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from '../lib/api/client';
-import { currentAccountSchema, type CurrentAccount } from '../lib/auth';
+import { currentAccountSchema, sessionCacheIdentity, type CurrentAccount } from '../lib/auth';
 
 interface SessionState {
   account: CurrentAccount;
@@ -40,7 +40,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     refetchOnWindowFocus: 'always',
     refetchInterval: 30_000,
   });
-  const identity = query.isError ? undefined : query.data?.account.id;
+  const identity = query.isError ? undefined : sessionCacheIdentity(query.data?.account);
   useEffect(() => {
     void client.cancelQueries({ predicate: (query) => query.queryKey[0] !== 'session' });
     client.removeQueries({ predicate: (query) => query.queryKey[0] !== 'session' });
@@ -63,13 +63,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [client]);
   async function clear() {
     await client.cancelQueries();
-    client.clear();
+    client.removeQueries({ predicate: (query) => query.queryKey[0] !== 'session' });
+    client.getMutationCache().clear();
     client.setQueryData(sessionKey, null);
     channel.current?.postMessage('changed');
   }
   async function refresh() {
-    await client.cancelQueries();
-    client.clear();
+    await clear();
     const session = await client.fetchQuery({
       queryKey: sessionKey,
       queryFn: fetchSession,

@@ -7,6 +7,7 @@ import type { JsonLogger } from '../platform/observability/json-logger';
 import { WorkerService } from './worker.service';
 import { WORKER_ENVIRONMENT, WORKER_LOGGER, WORKER_RUNTIME } from './worker.tokens';
 import { OutboxWorkerService } from './outbox-worker.service';
+import { MetricsRuntime } from '../platform/observability/metrics-runtime';
 
 @Module({})
 export class WorkerModule {
@@ -14,11 +15,13 @@ export class WorkerModule {
     environment: WorkerEnvironment,
     runtime: RuntimeDependencies,
     logger: JsonLogger,
+    metricsRuntime?: MetricsRuntime,
   ): DynamicModule {
     return {
       module: WorkerModule,
       imports: [ComplianceModule.register(environment)],
       providers: [
+        ...(metricsRuntime ? [{ provide: MetricsRuntime, useValue: metricsRuntime }] : []),
         WorkerService,
         OutboxWorkerService,
         {

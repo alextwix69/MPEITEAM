@@ -1,0 +1,50 @@
+groups:
+  - name: komanda-auth
+    rules:
+      - alert: AuthCommandFailures
+        expr: |
+          (sum by (service, operation) (increase(identity_auth_commands_total{operation=~"login|reset_request|reset_confirm",result="failed"}[10m]))
+          / sum by (service, operation) (increase(identity_auth_commands_total{operation=~"login|reset_request|reset_confirm"}[10m])) > 0.05)
+          and on (service, operation)
+          (sum by (service, operation) (increase(identity_auth_commands_total{operation=~"login|reset_request|reset_confirm"}[10m])) >= 20)
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Повышенная доля ошибок входа или восстановления доступа.'
+          runbook: docs/production/runbook.md
+      - alert: AuthCsrfFailures
+        expr: sum by (service) (increase(identity_csrf_failures_total[5m])) > 20
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Повышенное число отказов Origin/CSRF.'
+          runbook: docs/production/runbook.md
+      - alert: PasswordResetDeadLetter
+        expr: max by (service) (outbox_delivery_backlog{consumer="identity.password-reset-email",state="dead_letter"}) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Письмо восстановления доступа находится в DLQ.'
+          runbook: docs/production/runbook.md
+      - alert: PasswordResetDelayed
+        expr: max by (service) (outbox_delivery_oldest_pending_age{consumer="identity.password-reset-email"}) > 300000
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Письмо восстановления ожидает доставки более 5 минут.'
+          runbook: docs/production/runbook.md
+      - alert: PasswordResetDeliveryCritical
+        expr: max by (service) (outbox_delivery_oldest_pending_age{consumer="identity.password-reset-email"}) > 1800000
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Письмо восстановления ожидает доставки более 30 минут.'
+          runbook: docs/production/runbook.md
+      - alert: AuthMetricsUnavailable
+        expr: up{job=~"komanda-api|komanda-worker"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Недоступен endpoint метрик API или worker.'
+          runbook: docs/production/runbook.md

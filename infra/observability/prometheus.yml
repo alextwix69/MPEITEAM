@@ -1,0 +1,14 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - auth-alerts.yml
+
+scrape_configs:
+  - job_name: komanda-api
+    static_configs:
+      - targets: ['api:9464']
+  - job_name: komanda-worker
+    static_configs:
+      - targets: ['worker:9465']

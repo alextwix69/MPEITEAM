@@ -39,6 +39,8 @@ docker compose down --volumes
 
 ## Runtime и health
 
+API и worker экспортируют OpenTelemetry metrics на отдельных private endpoints: `/metrics`, порты `9464` и `9465` соответственно. Без Docker bind по умолчанию `127.0.0.1`; в Compose endpoint доступен только внутри сети контейнеров. Scrape config, импортируемый dashboard, alert rules и порядок проверки: [наблюдаемость auth](docs/production/auth-observability.md).
+
 - `GET http://localhost:8080/health/live` возвращает `200`, пока event loop API отвечает. Внешние зависимости не проверяются.
 - `GET http://localhost:8080/health/ready` возвращает snapshot без hosts и credentials.
 - Недоступный PostgreSQL даёт `503` и `status: unavailable`, но не ломает liveness.

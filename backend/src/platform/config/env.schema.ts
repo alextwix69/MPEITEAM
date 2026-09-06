@@ -59,6 +59,7 @@ const commonSchema = z
     WORKER_HEARTBEAT_INTERVAL_MS: z.coerce.number().int().min(500).max(60_000).default(5000),
     WORKER_HEARTBEAT_TTL_SECONDS: z.coerce.number().int().min(2).max(300).default(15),
     OTEL_SERVICE_NAME: z.string().min(1).default('komanda-mpei'),
+    METRICS_HOST: z.ipv4().default('127.0.0.1'),
   })
   .superRefine((value, context) => {
     const maximumHeartbeatGapMs =
@@ -75,6 +76,7 @@ const commonSchema = z
 const apiSchema = commonSchema
   .safeExtend({
     API_PORT: z.coerce.number().int().min(1).max(65_535).default(3001),
+    METRICS_PORT: z.coerce.number().int().min(1).max(65_535).default(9464),
     API_DATABASE_URL: databaseUrlSchema,
     AUTH_ALLOWED_ORIGINS: z
       .string()
@@ -140,6 +142,7 @@ const apiSchema = commonSchema
 
 const workerSchema = commonSchema
   .safeExtend({
+    METRICS_PORT: z.coerce.number().int().min(1).max(65_535).default(9465),
     WORKER_DATABASE_URL: databaseUrlSchema,
     LEGAL_DATABASE_URL: databaseUrlSchema.default(
       'postgresql://komanda_legal:komanda-legal-local@localhost:5432/komanda_legal?connection_limit=2',
