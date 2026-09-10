@@ -85,7 +85,11 @@ Worker запускает retention sweep раз в час: terminal tokens — 
 
 ## Media incident
 
-- При malware/sanitization failure объект остаётся в quarantine/failed и не прикрепляется.
+- При `MEDIA_MALWARE_DETECTED`, `UNSUPPORTED_MEDIA_TYPE` или `MEDIA_PROCESSING_FAILED` объект остаётся в quarantine/failed и не прикрепляется. Не выдавать signed URL вручную и не переводить session в ready SQL-командой.
+- При росте `files.processing.results{result="failed"}` проверить worker, MinIO и возраст `files.upload_sessions` в `processing`; после восстановления worker повторно обрабатывает только durable processing rows.
+- При росте expired quarantine проверить `FILES_UPLOAD_TTL_SECONDS`, `FILES_QUARANTINE_TTL_SECONDS`, доступность MinIO и `files.upload_sessions` с состояниями `created`/`uploaded`. Не удалять объекты вручную до сверки с DB.
+- При backlog `media_deletion_tombstones` проверить S3 credentials/permissions и replay pending/failed tombstones через worker; отсутствие объекта в S3 считается успешным delete.
+- `GET /media/{mediaId}/download-url` обязан возвращать `Cache-Control: no-store`, TTL не более пяти минут и только uploader/object owner. Cross-account 404 не расследовать через выдачу содержимого в logs.
 - Provider получает только sanitized `public_content` по object-scoped URL.
 - При подозрении на утечку URL отозвать provider credentials/URL issuer, закрыть egress и проверить access metadata без скачивания пользовательских объектов в логи.
 - Private media не отправлять на ручной анализ вне конкретной жалобы и permission `evidence.view`.

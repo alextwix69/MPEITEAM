@@ -8,6 +8,7 @@ import { WorkerService } from './worker.service';
 import { WORKER_ENVIRONMENT, WORKER_LOGGER, WORKER_RUNTIME } from './worker.tokens';
 import { OutboxWorkerService } from './outbox-worker.service';
 import { MetricsRuntime } from '../platform/observability/metrics-runtime';
+import { FilesModule } from '../modules/files';
 
 @Module({})
 export class WorkerModule {
@@ -19,7 +20,7 @@ export class WorkerModule {
   ): DynamicModule {
     return {
       module: WorkerModule,
-      imports: [ComplianceModule.register(environment)],
+      imports: [ComplianceModule.register(environment), FilesModule.registerWorker(environment)],
       providers: [
         ...(metricsRuntime ? [{ provide: MetricsRuntime, useValue: metricsRuntime }] : []),
         WorkerService,

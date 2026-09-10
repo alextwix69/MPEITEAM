@@ -84,8 +84,41 @@ describe('platform foundation migration', () => {
         'profiles.profile_versions',
         'profiles.profiles',
         'profiles.resumes',
+        'files.media_bindings',
+        'files.media_deletion_tombstones',
+        'files.media_objects',
+        'files.upload_sessions',
       ].sort(),
     );
+  });
+
+  it('enforces files ownership, state invariants and optimistic versions in PostgreSQL', async () => {
+    const constraints = await prisma.$queryRaw<Array<{ conname: string }>>`
+      SELECT conname
+      FROM pg_constraint
+      WHERE connamespace = 'files'::regnamespace
+    `;
+    const names = constraints.map(({ conname }) => conname);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'upload_sessions_failure_check',
+        'upload_sessions_scope_owner_check',
+        'media_objects_scope_state_check',
+        'media_bindings_media_fk',
+        'media_tombstones_state_check',
+      ]),
+    );
+    const versions = await prisma.$queryRaw<Array<{ table_name: string }>>`
+      SELECT table_name
+      FROM information_schema.columns
+      WHERE table_schema = 'files' AND column_name = 'row_version'
+      ORDER BY table_name
+    `;
+    expect(versions.map(({ table_name }) => table_name)).toEqual([
+      'media_deletion_tombstones',
+      'media_objects',
+      'upload_sessions',
+    ]);
   });
 
   it('keeps consent evidence in the isolated legal database', async () => {
@@ -107,6 +140,12 @@ describe('platform foundation migration', () => {
       'SELECT rolsuper FROM pg_roles WHERE rolname = current_user',
     );
     expect(role.rows).toEqual([{ rolsuper: false }]);
+    const filesPrivileges = await apiDatabase.query<{ can_insert: boolean; can_update: boolean }>(
+      `SELECT
+         has_table_privilege(current_user, 'files.upload_sessions', 'INSERT') AS can_insert,
+         has_table_privilege(current_user, 'files.media_deletion_tombstones', 'UPDATE') AS can_update`,
+    );
+    expect(filesPrivileges.rows).toEqual([{ can_insert: true, can_update: true }]);
 
     const legalUrl = new URL(
       process.env.TEST_LEGAL_DATABASE_URL ??

@@ -1,6 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { v7 as uuidv7 } from 'uuid';
+import { DatabaseService } from '../../../platform/database/database.service';
 
 export type FormalRole = 'student' | 'teacher' | 'employer';
 
@@ -18,6 +19,29 @@ export interface InitialProfileInput {
 
 @Injectable()
 export class ProfilesService {
+  constructor(@Inject(DatabaseService) private readonly database: DatabaseService) {}
+
+  async ownsMediaOwner(
+    accountId: string,
+    ownerType: 'profile' | 'resume',
+    ownerId: string,
+  ): Promise<boolean> {
+    if (ownerType === 'profile') {
+      return Boolean(
+        await this.database.profile.findFirst({
+          where: { id: ownerId, accountId },
+          select: { id: true },
+        }),
+      );
+    }
+    return Boolean(
+      await this.database.resume.findFirst({
+        where: { id: ownerId, profile: { accountId } },
+        select: { id: true },
+      }),
+    );
+  }
+
   async createInitialProfile(
     transaction: Prisma.TransactionClient,
     accountId: string,

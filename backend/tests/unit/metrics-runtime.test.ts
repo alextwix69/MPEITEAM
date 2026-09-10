@@ -26,6 +26,8 @@ describe('runtime metrics export', () => {
       token: 'do-not-export',
       cookie: 'do-not-export',
       url: 'https://private.invalid/reset-password',
+      scope: 'private_message',
+      queue: 'quarantine',
     });
     const response = await fetch(`http://127.0.0.1:${runtime.port}/metrics`);
     expect(response.status).toBe(200);
@@ -36,6 +38,8 @@ describe('runtime metrics export', () => {
     );
     expect(body).toContain('identity_csrf_failures_total');
     expect(body).toContain('process_role="api"');
+    expect(body).toContain('scope="private_message"');
+    expect(body).toContain('queue="quarantine"');
     expect(body).not.toMatch(/secret@example|do-not-export|private\.invalid/u);
     expect((await fetch(`http://127.0.0.1:${runtime.port}/other`)).status).toBe(404);
   });

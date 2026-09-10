@@ -4,6 +4,9 @@ import type { Request, Response } from 'express';
 import { ROUTE_ACCESS, type RouteAccess } from '../../../platform/http/route-access';
 import { IdentityService } from '../application/identity.service';
 import { sessionFromCookie } from './session-cookie';
+import type { CurrentAccount } from '../identity.types';
+
+type AuthenticatedRequest = Request & { currentAccount?: CurrentAccount };
 
 @Injectable()
 export class SessionGuard implements CanActivate {
@@ -20,9 +23,9 @@ export class SessionGuard implements CanActivate {
         context.getClass(),
       ]) ?? 'active';
     if (access === 'public' || access === 'logout') return true;
-    const request = context.switchToHttp().getRequest<Request>();
+    const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
     const secret = sessionFromCookie(request.headers.cookie);
-    await this.identity.authorizeSession(secret, access === 'active');
+    request.currentAccount = await this.identity.authorizeSession(secret, access === 'active');
     if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
       await this.identity.validateCsrf(secret, request.get('origin'), request.get('x-csrf-token'));
     }

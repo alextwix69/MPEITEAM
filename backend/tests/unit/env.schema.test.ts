@@ -114,4 +114,17 @@ describe('environment validation', () => {
       }),
     ).toThrow('WORKER_HEARTBEAT_TTL_SECONDS');
   });
+
+  it('requires HTTPS for a non-loopback public object-storage endpoint in production', () => {
+    expect(() =>
+      parseWorkerEnvironment({
+        ...common,
+        NODE_ENV: 'production',
+        S3_PUBLIC_ENDPOINT: 'http://objects.example.test',
+        AUTH_TOKEN_ENCRYPTION_KEY: '1'.repeat(64),
+        LEGAL_SUBJECT_HMAC_KEY: 'production-legal-subject-key-0000001',
+        WORKER_DATABASE_URL: 'postgresql://user:pass@localhost:5432/worker?connection_limit=3',
+      }),
+    ).toThrow('S3_PUBLIC_ENDPOINT');
+  });
 });

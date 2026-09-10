@@ -1,0 +1,4 @@
+export const FILES_ENVIRONMENT = Symbol('FILES_ENVIRONMENT');
+export const OBJECT_STORAGE = Symbol('OBJECT_STORAGE');
+export const MALWARE_SCANNER = Symbol('MALWARE_SCANNER');
+export const UPLOAD_RATE_LIMITER = Symbol('UPLOAD_RATE_LIMITER');

@@ -5,7 +5,7 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
-  schemas  = ["identity", "platform", "profiles"]
+  schemas  = ["identity", "platform", "profiles", "files"]
 }
 
 enum IdentityFormalRole {
@@ -92,6 +92,78 @@ enum OutboxDeliveryState {
 
   @@map("outbox_delivery_state")
   @@schema("platform")
+}
+
+enum ContentScope {
+  private_message
+  public_content
+
+  @@map("content_scope")
+  @@schema("files")
+}
+
+enum UploadSessionState {
+  created
+  uploaded
+  processing
+  technically_ready
+  failed
+  expired
+  consumed
+
+  @@map("upload_session_state")
+  @@schema("files")
+}
+
+enum MediaObjectState {
+  uploaded
+  quarantined
+  sanitized
+  technically_ready
+  moderation_pending
+  approved
+  rejected
+  moderation_failed
+  attached
+  deleting
+  deleted
+
+  @@map("media_object_state")
+  @@schema("files")
+}
+
+enum MediaRetentionClass {
+  message_photo
+  profile_asset
+  resume_asset
+  team_asset
+  opportunity_asset
+  event_asset
+
+  @@map("media_retention_class")
+  @@schema("files")
+}
+
+enum MediaBindingOwnerType {
+  profile_version
+  resume_version
+  team_version
+  opportunity_version
+  event_version
+  message
+
+  @@map("media_binding_owner_type")
+  @@schema("files")
+}
+
+enum MediaTombstoneState {
+  pending
+  in_progress
+  completed
+  failed
+
+  @@map("media_tombstone_state")
+  @@schema("files")
 }
 
 model Account {
@@ -298,4 +370,95 @@ model OutboxDelivery {
   @@index([state, availableAt, id], map: "outbox_deliveries_dead_letter_idx")
   @@map("outbox_deliveries")
   @@schema("platform")
+}
+
+model UploadSession {
+  id                     String             @id @db.Uuid
+  ownerAccountId         String             @map("owner_account_id") @db.Uuid
+  contentScope           ContentScope       @map("content_scope")
+  ownerType              String             @map("owner_type") @db.VarChar(64)
+  ownerRef               String             @map("owner_ref") @db.Uuid
+  expectedMime           String             @map("expected_mime") @db.VarChar(64)
+  expectedSizeBytes      Int                @map("expected_size_bytes")
+  objectKey              String             @unique(map: "upload_sessions_object_key_key") @map("object_key") @db.VarChar(512)
+  sourceEtag             String?            @map("source_etag") @db.VarChar(128)
+  state                  UploadSessionState @default(created)
+  expiresAt              DateTime           @map("expires_at") @db.Timestamptz(6)
+  failureCode            String?            @map("failure_code") @db.VarChar(100)
+  processingLeaseUntil   DateTime?          @map("processing_lease_until") @db.Timestamptz(6)
+  processingAttemptCount Int                @default(0) @map("processing_attempt_count")
+  quarantineDeletedAt    DateTime?          @map("quarantine_deleted_at") @db.Timestamptz(6)
+  correlationId          String             @map("correlation_id") @db.Uuid
+  eventId                String             @unique(map: "upload_sessions_event_id_key") @map("event_id") @db.Uuid
+  createdAt              DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  rowVersion             BigInt             @default(0) @map("row_version")
+
+  @@index([ownerAccountId, state, createdAt(sort: Desc), id], map: "upload_sessions_owner_state_idx")
+  @@index([state, expiresAt, id], map: "upload_sessions_expiry_idx")
+  @@index([processingLeaseUntil, id], map: "upload_sessions_processing_lease_idx")
+  @@index([updatedAt, id], map: "upload_sessions_quarantine_cleanup_idx")
+  @@map("upload_sessions")
+  @@schema("files")
+}
+
+model MediaObject {
+  id                String              @id @db.Uuid
+  uploadSessionId   String              @unique(map: "media_objects_upload_session_key") @map("upload_session_id") @db.Uuid
+  uploaderAccountId String              @map("uploader_account_id") @db.Uuid
+  contentScope      ContentScope        @map("content_scope")
+  state             MediaObjectState
+  bucket            String              @db.VarChar(128)
+  objectKey         String              @map("object_key") @db.VarChar(512)
+  sha256            Bytes
+  mime              String              @db.VarChar(64)
+  sizeBytes         Int                 @map("size_bytes")
+  width             Int
+  height            Int
+  retentionClass    MediaRetentionClass @map("retention_class")
+  attachedAt        DateTime?           @map("attached_at") @db.Timestamptz(6)
+  deletedAt         DateTime?           @map("deleted_at") @db.Timestamptz(6)
+  createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  rowVersion        BigInt              @default(0) @map("row_version")
+  binding           MediaBinding?
+
+  @@unique([bucket, objectKey], map: "media_objects_bucket_object_key")
+  @@index([uploaderAccountId, attachedAt, id], map: "media_objects_message_quota_idx")
+  @@index([uploaderAccountId, state, createdAt, id], map: "media_objects_owner_state_idx")
+  @@map("media_objects")
+  @@schema("files")
+}
+
+model MediaBinding {
+  mediaId   String                @id @map("media_id") @db.Uuid
+  ownerType MediaBindingOwnerType @map("owner_type")
+  ownerId   String                @map("owner_id") @db.Uuid
+  slot      Int                   @db.SmallInt
+  boundAt   DateTime              @map("bound_at") @db.Timestamptz(6)
+  media     MediaObject           @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerType, ownerId, slot], map: "media_bindings_owner_slot_key")
+  @@map("media_bindings")
+  @@schema("files")
+}
+
+model MediaDeletionTombstone {
+  mediaId       String              @id @map("media_id") @db.Uuid
+  bucket        String              @db.VarChar(128)
+  objectKey     String              @map("object_key") @db.VarChar(512)
+  state         MediaTombstoneState @default(pending)
+  attemptCount  Int                 @default(0) @map("attempt_count")
+  availableAt   DateTime            @map("available_at") @db.Timestamptz(6)
+  leaseUntil    DateTime?           @map("lease_until") @db.Timestamptz(6)
+  completedAt   DateTime?           @map("completed_at") @db.Timestamptz(6)
+  lastErrorCode String?             @map("last_error_code") @db.VarChar(100)
+  createdAt     DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  rowVersion    BigInt              @default(0) @map("row_version")
+
+  @@index([availableAt, mediaId], map: "media_tombstones_due_idx")
+  @@index([leaseUntil, mediaId], map: "media_tombstones_lease_idx")
+  @@map("media_deletion_tombstones")
+  @@schema("files")
 }

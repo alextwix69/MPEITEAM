@@ -8,6 +8,8 @@ TASK-005 добавляет `/login`, `/forgot-password`, `/reset-password`, в�
 
 Auth-конфигурация: `AUTH_ALLOWED_ORIGINS` — список точных origins через запятую (локально `http://localhost:8080`, в production — фактический HTTPS origin), `AUTH_RESET_TTL_SECONDS` — срок reset ссылки (по умолчанию 3600), `AUTH_SESSION_TTL_SECONDS` — срок session. Web использует server-only `API_INTERNAL_URL=http://api:3001`; при запуске процессов без Docker задайте `http://127.0.0.1:3001`. Не вычисляйте разрешённый origin из недоверенного Host. CSRF не хранится в localStorage; `__Host-session` остаётся HttpOnly/Secure. Наблюдаемость: `docs/production/auth-observability.md`.
 
+Media upload реализован через `POST /api/v1/uploads`, direct presigned PUT в приватный MinIO/S3 quarantine, `POST /api/v1/uploads/{uploadId}/complete`, polling состояния и `GET /api/v1/media/{mediaId}/download-url`. Принимаются JPEG/PNG/WebP до 5 МБ; worker проверяет magic bytes и объект через ClamAV, декодирует, удаляет EXIF и сохраняет JPEG не больше Full HD/1 МБ. Private media получает `ready` только после worker sanitization; signed URL действует не более пяти минут и не кешируется. Внутренняя `S3_ENDPOINT` отделена от доступной браузеру `S3_PUBLIC_ENDPOINT`; TTL, лимиты media и настройки `FILES_SCANNER_*` валидируются при старте.
+
 ## Требования
 
 - Node.js 24.x;

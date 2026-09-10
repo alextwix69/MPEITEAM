@@ -49,11 +49,34 @@ const commonSchema = z
       .default('info'),
     REDIS_URL: redisUrlSchema,
     S3_ENDPOINT: objectStorageUrlSchema,
+    S3_PUBLIC_ENDPOINT: objectStorageUrlSchema.default('http://localhost:9000'),
     S3_REGION: z.string().min(1).default('ru-central-1'),
     S3_BUCKET: z.string().min(3),
     S3_ACCESS_KEY: z.string().min(1),
     S3_SECRET_KEY: z.string().min(1),
     S3_FORCE_PATH_STYLE: booleanFromString,
+    FILES_UPLOAD_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(900),
+    FILES_DOWNLOAD_TTL_SECONDS: z.coerce.number().int().min(60).max(300).default(300),
+    FILES_QUARANTINE_TTL_SECONDS: z.coerce.number().int().min(3600).max(86_400).default(86_400),
+    FILES_WORKER_INTERVAL_MS: z.coerce.number().int().min(250).max(60_000).default(1000),
+    FILES_MAX_SIZE_BYTES: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(5 * 1024 * 1024)
+      .default(5 * 1024 * 1024),
+    FILES_MAX_OUTPUT_BYTES: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(1024 * 1024)
+      .default(1024 * 1024),
+    FILES_SCANNER_HOST: z.string().min(1).default('127.0.0.1'),
+    FILES_SCANNER_PORT: z.coerce.number().int().min(1).max(65_535).default(3310),
+    FILES_SCANNER_TIMEOUT_MS: z.coerce.number().int().min(100).max(30_000).default(5000),
+    IDEMPOTENCY_HMAC_KEY: z.string().min(32).default('local-idempotency-key-change-me-0001'),
+    RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(1).max(3600).default(60),
+    RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().min(1).max(1000).default(20),
     DEPENDENCY_TIMEOUT_MS: z.coerce.number().int().min(100).max(10_000).default(1500),
     WORKER_HEARTBEAT_KEY: z.string().min(1).default('platform:worker:heartbeat'),
     WORKER_HEARTBEAT_INTERVAL_MS: z.coerce.number().int().min(500).max(60_000).default(5000),
@@ -62,6 +85,18 @@ const commonSchema = z
     METRICS_HOST: z.ipv4().default('127.0.0.1'),
   })
   .superRefine((value, context) => {
+    const publicStorageUrl = new URL(value.S3_PUBLIC_ENDPOINT);
+    if (
+      value.NODE_ENV === 'production' &&
+      publicStorageUrl.protocol !== 'https:' &&
+      !['localhost', '127.0.0.1'].includes(publicStorageUrl.hostname)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['S3_PUBLIC_ENDPOINT'],
+        message: 'production public object storage endpoint must use HTTPS',
+      });
+    }
     const maximumHeartbeatGapMs =
       value.WORKER_HEARTBEAT_INTERVAL_MS + 2 * value.DEPENDENCY_TIMEOUT_MS;
     if (value.WORKER_HEARTBEAT_TTL_SECONDS * 1000 <= maximumHeartbeatGapMs) {
@@ -103,13 +138,10 @@ const apiSchema = commonSchema
       .string()
       .regex(/^[a-fA-F0-9]{64}$/)
       .default('0000000000000000000000000000000000000000000000000000000000000000'),
-    IDEMPOTENCY_HMAC_KEY: z.string().min(32).default('local-idempotency-key-change-me-0001'),
     CONSENT_VERSION_AGE_18: z.string().min(1).max(64).default('local-v1'),
     CONSENT_VERSION_USER_TERMS: z.string().min(1).max(64).default('local-v1'),
     CONSENT_VERSION_PERSONAL_DATA: z.string().min(1).max(64).default('local-v1'),
     CONSENT_VERSION_PUBLIC_PROFILE: z.string().min(1).max(64).default('local-v1'),
-    RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(1).max(3600).default(60),
-    RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().min(1).max(1000).default(20),
     RESEND_COOLDOWN_SECONDS: z.coerce.number().int().min(1).max(3600).default(60),
     TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(3).default(0),
     SESSION_COOKIE_SECURE: booleanFromString,

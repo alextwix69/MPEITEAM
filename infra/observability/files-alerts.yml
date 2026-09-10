@@ -1,0 +1,42 @@
+groups:
+  - name: komanda-files
+    rules:
+      - alert: FilesProcessingFailures
+        expr: sum(increase(files_processing_results_total{result="failed"}[10m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Worker отклонил одну или несколько загрузок.'
+          runbook: docs/production/runbook.md
+      - alert: FilesProcessingP95Slow
+        expr: histogram_quantile(0.95, sum by (le) (rate(files_processing_duration_milliseconds_bucket[10m]))) > 5000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'p95 обработки media превышает 5 секунд.'
+          runbook: docs/production/runbook.md
+      - alert: FilesProcessingBacklog
+        expr: max(files_queue_oldest_age_seconds{queue="processing"}) > 900
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Загрузка остаётся в processing более 15 минут.'
+          runbook: docs/production/runbook.md
+      - alert: FilesQuarantineCleanupDelayed
+        expr: max(files_queue_oldest_age_seconds{queue="quarantine"}) > 900
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Удаление объекта из quarantine задержано более 15 минут.'
+          runbook: docs/production/runbook.md
+      - alert: FilesTombstoneBacklog
+        expr: max(files_queue_oldest_age_seconds{queue="tombstone"}) > 900
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Удаление media по tombstone задержано более 15 минут.'
+          runbook: docs/production/runbook.md

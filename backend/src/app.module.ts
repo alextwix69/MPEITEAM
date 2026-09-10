@@ -4,6 +4,7 @@ import type { DependencyProbe } from './platform/health/health.types';
 import type { ApiEnvironment } from './platform/config/env.schema';
 import { DatabaseModule } from './platform/database/database.module';
 import { IdentityModule } from './modules/identity';
+import { FilesModule } from './modules/files';
 import { MetricsRuntime } from './platform/observability/metrics-runtime';
 
 @Module({})
@@ -19,6 +20,7 @@ export class AppModule {
       imports: [
         DatabaseModule.register(environment),
         IdentityModule.register(environment),
+        FilesModule.registerApi(environment),
         HealthModule.register(probe),
       ],
     };

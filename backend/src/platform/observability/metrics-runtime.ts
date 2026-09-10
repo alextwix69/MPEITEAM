@@ -26,7 +26,14 @@ export class MetricsRuntime implements OnApplicationShutdown {
         {
           instrumentName: '*',
           attributesProcessors: [
-            createAllowListAttributesProcessor(['operation', 'result', 'consumer', 'state']),
+            createAllowListAttributesProcessor([
+              'operation',
+              'result',
+              'consumer',
+              'state',
+              'scope',
+              'queue',
+            ]),
             {
               process: (attributes) => ({
                 ...attributes,

@@ -75,6 +75,7 @@ describe('bounded-context module boundaries', () => {
           ({ path }) =>
             !path.includes('/identity/') &&
             !path.includes('/profiles/') &&
+            !path.includes('/files/') &&
             !path.includes('/compliance/'),
         )
         .every(({ source }) => source.trim() === 'export {};'),
