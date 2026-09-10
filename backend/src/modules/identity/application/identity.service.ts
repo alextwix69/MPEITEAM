@@ -119,6 +119,15 @@ export class IdentityService {
     };
   }
 
+  async isActiveAccount(accountId: string): Promise<boolean> {
+    return Boolean(
+      await this.database.account.findFirst({
+        where: { id: accountId, state: 'active', emailVerifiedAt: { not: null } },
+        select: { id: true },
+      }),
+    );
+  }
+
   validateRegistrationRules(request: RegistrationRequest): string {
     const email = normalizeEmail(request.email);
     const domain = email.slice(email.lastIndexOf('@') + 1);

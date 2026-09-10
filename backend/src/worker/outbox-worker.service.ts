@@ -1,6 +1,7 @@
 import {
   Inject,
   Injectable,
+  Optional,
   type OnApplicationBootstrap,
   type OnApplicationShutdown,
 } from '@nestjs/common';
@@ -17,6 +18,8 @@ import type { JsonLogger } from '../platform/observability/json-logger';
 import { WORKER_ENVIRONMENT, WORKER_LOGGER } from './worker.tokens';
 import { purgeMainRegistrationState } from './registration-retention';
 import { recordOutboxSnapshot, type OutboxMetricRow } from './outbox-metrics';
+import { TrustService } from '../modules/trust';
+import { NotificationsService } from '../modules/notifications';
 
 const QUEUE_NAME = 'platform-outbox';
 const MAX_ATTEMPTS = 5;
@@ -72,6 +75,10 @@ export class OutboxWorkerService implements OnApplicationBootstrap, OnApplicatio
     @Inject(WORKER_LOGGER) private readonly logger: JsonLogger,
     @Inject(EMAIL_SENDER) private readonly emailSender: EmailSender,
     @Inject(LegalEvidenceStore) private readonly legalEvidence: LegalEvidenceStore,
+    @Optional() @Inject(TrustService) private readonly trust?: TrustService,
+    @Optional()
+    @Inject(NotificationsService)
+    private readonly notifications?: NotificationsService,
   ) {
     this.#database = new PrismaClient({
       datasources: { db: { url: environment.WORKER_DATABASE_URL } },
@@ -220,6 +227,12 @@ export class OutboxWorkerService implements OnApplicationBootstrap, OnApplicatio
         );
       } else if (delivery.consumer === 'compliance.consent-evidence') {
         await this.legalEvidence.appendConsentEvidence(delivery.event);
+      } else if (delivery.consumer === 'trust.automated-moderation') {
+        if (!this.trust) throw new Error('CONSUMER_UNKNOWN');
+        await this.trust.consumeModerationRequest(delivery.event);
+      } else if (delivery.consumer === 'notifications.moderation-result') {
+        if (!this.notifications) throw new Error('CONSUMER_UNKNOWN');
+        await this.notifications.consumeModerationResult(delivery.event);
       } else {
         throw new Error('CONSUMER_UNKNOWN');
       }

@@ -10,7 +10,7 @@ import {
 describe('media upload UI rules', () => {
   it('allows only server-ready states to show a preview', () => {
     expect(isMediaReady('processing')).toBe(false);
-    expect(isMediaReady('moderation_pending')).toBe(false);
+    expect(isMediaReady('moderation_pending')).toBe(true);
     expect(isMediaReady('ready')).toBe(true);
     expect(isMediaReady('approved')).toBe(true);
   });

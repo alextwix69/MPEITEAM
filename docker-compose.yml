@@ -192,6 +192,10 @@ services:
       EMAIL_FROM: no-reply@komanda.mpei.ru
       PUBLIC_APP_URL: http://localhost:8080
       OUTBOX_POLL_INTERVAL_MS: 1000
+      MODERATION_PRIMARY_URL: http://local-moderator-primary
+      MODERATION_SECONDARY_URL: http://local-moderator-secondary
+      MODERATION_POLICY_VERSION: '2026-08-17'
+      MODERATION_WORKER_INTERVAL_MS: 1000
     depends_on:
       migrate:
         condition: service_completed_successfully

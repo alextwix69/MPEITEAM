@@ -8,6 +8,8 @@ import { FILES_ENVIRONMENT, MALWARE_SCANNER, UPLOAD_RATE_LIMITER } from './files
 import { ClamAvMalwareScanner } from './infrastructure/malware-scanner.adapter';
 import { objectStorageProvider } from './infrastructure/s3-storage.adapter';
 import { RedisUploadRateLimiter } from './infrastructure/upload-rate-limiter';
+import type { JsonLogger } from '../../platform/observability/json-logger';
+import { WORKER_LOGGER } from '../../worker/worker.tokens';
 
 @Module({})
 export class FilesModule {
@@ -26,15 +28,19 @@ export class FilesModule {
     };
   }
 
-  static registerWorker(environment: WorkerEnvironment): DynamicModule {
+  static registerWorker(environment: WorkerEnvironment, logger: JsonLogger): DynamicModule {
     return {
       module: FilesModule,
+      imports: [ProfilesModule],
       providers: [
+        FilesService,
         FilesWorkerService,
         objectStorageProvider,
         { provide: MALWARE_SCANNER, useClass: ClamAvMalwareScanner },
         { provide: FILES_ENVIRONMENT, useValue: environment },
+        { provide: WORKER_LOGGER, useValue: logger },
       ],
+      exports: [FilesService],
     };
   }
 }

@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { v7 as uuidv7 } from 'uuid';
 import { DatabaseService } from '../../../platform/database/database.service';
@@ -18,6 +18,7 @@ import type {
   FilesEnvironment,
   UploadCreateInput,
   UploadSessionView,
+  PublicMediaBindingInput,
 } from '../files.types';
 import { publicStateFor, validateUploadPolicy } from '../domain/image-rules';
 import { idempotencyKeySchema } from './files.schemas';
@@ -42,7 +43,9 @@ export class FilesService {
     @Inject(DatabaseService) private readonly database: DatabaseService,
     @Inject(ProfilesService) private readonly profiles: ProfilesService,
     @Inject(OBJECT_STORAGE) private readonly storage: ObjectStorage,
-    @Inject(UPLOAD_RATE_LIMITER) private readonly rateLimiter: UploadRateLimiter,
+    @Optional()
+    @Inject(UPLOAD_RATE_LIMITER)
+    private readonly rateLimiter: UploadRateLimiter | undefined,
     @Inject(FILES_ENVIRONMENT) private readonly environment: FilesEnvironment,
   ) {}
 
@@ -54,6 +57,7 @@ export class FilesService {
   ): Promise<{ body: UploadSessionView; replayed: boolean }> {
     validateUploadPolicy(input, this.environment.FILES_MAX_SIZE_BYTES);
     this.validateIdempotencyKey(idempotencyKey);
+    if (!this.rateLimiter) throw new Error('UPLOAD_RATE_LIMITER_NOT_CONFIGURED');
     await this.rateLimiter.consume(accountId, ipAddress);
     await this.assertOwner(accountId, input.ownerType, input.ownerId);
 
@@ -284,7 +288,11 @@ export class FilesService {
 
   async createDownloadUrl(accountId: string, mediaId: string): Promise<DownloadUrlView> {
     const media = await this.database.mediaObject.findUnique({ where: { id: mediaId } });
-    if (!media || media.uploaderAccountId !== accountId) {
+    const canReadPublished =
+      media?.contentScope === 'public_content' &&
+      ['approved', 'attached'].includes(media.state) &&
+      (await this.profiles.isPublishedMedia(mediaId));
+    if (!media || (media.uploaderAccountId !== accountId && !canReadPublished)) {
       this.notFound('MEDIA_NO_LONGER_STORED', 'Изображение больше недоступно.');
     }
     if (media.state === 'deleting' || media.state === 'deleted') {
@@ -318,6 +326,111 @@ export class FilesService {
       }),
       expiresAt: expiresAt.toISOString(),
     };
+  }
+
+  async validateAndBindPublicMedia(
+    transaction: Prisma.TransactionClient,
+    input: PublicMediaBindingInput,
+  ): Promise<void> {
+    const media = await transaction.mediaObject.findFirst({
+      where: {
+        id: input.mediaId,
+        uploaderAccountId: input.accountId,
+        contentScope: 'public_content',
+        state: { in: ['moderation_pending', 'approved'] },
+      },
+    });
+    if (!media) {
+      throw new ApplicationError(
+        'MEDIA_NOT_READY',
+        'Изображение ещё не готово или не принадлежит этому объекту.',
+        409,
+        true,
+      );
+    }
+    const upload = await transaction.uploadSession.findFirst({
+      where: {
+        id: media.uploadSessionId,
+        ownerAccountId: input.accountId,
+        ownerType: input.ownerType,
+        ownerRef: input.ownerId,
+      },
+      select: { id: true },
+    });
+    if (!upload) {
+      throw new ApplicationError(
+        'MEDIA_NOT_READY',
+        'Изображение не подходит для этого объекта.',
+        409,
+      );
+    }
+    if (media.state === 'approved') return;
+    const occupied = await transaction.mediaBinding.findFirst({
+      where: { ownerType: input.versionType, ownerId: input.versionId, slot: 0 },
+    });
+    if (occupied && occupied.mediaId !== input.mediaId) {
+      throw new ApplicationError(
+        'MEDIA_NOT_READY',
+        'Для этой версии уже выбрано изображение.',
+        409,
+      );
+    }
+    await transaction.mediaBinding.upsert({
+      where: { mediaId: input.mediaId },
+      create: {
+        mediaId: input.mediaId,
+        ownerType: input.versionType,
+        ownerId: input.versionId,
+        slot: 0,
+        boundAt: new Date(),
+      },
+      update: {
+        ownerType: input.versionType,
+        ownerId: input.versionId,
+        slot: 0,
+        boundAt: new Date(),
+      },
+    });
+  }
+
+  async createModerationUrl(mediaId: string): Promise<string | undefined> {
+    const media = await this.database.mediaObject.findFirst({
+      where: {
+        id: mediaId,
+        contentScope: 'public_content',
+        state: { in: ['moderation_pending', 'approved'] },
+      },
+    });
+    if (!media) {
+      throw new ApplicationError('MEDIA_NOT_READY', 'Изображение не готово к проверке.', 409, true);
+    }
+    if (media.state === 'approved') return undefined;
+    return this.storage.createDownloadUrl({
+      objectKey: media.objectKey,
+      expiresInSeconds: Math.min(300, this.environment.FILES_DOWNLOAD_TTL_SECONDS),
+    });
+  }
+
+  async applyPublicMediaDecision(
+    transaction: Prisma.TransactionClient,
+    mediaId: string,
+    approved: boolean,
+  ): Promise<void> {
+    const updated = await transaction.mediaObject.updateMany({
+      where: {
+        id: mediaId,
+        contentScope: 'public_content',
+        state: { in: ['moderation_pending', approved ? 'approved' : 'rejected'] },
+      },
+      data: {
+        state: approved ? 'approved' : 'rejected',
+        ...(approved ? { attachedAt: new Date() } : {}),
+        rowVersion: { increment: 1 },
+      },
+    });
+    if (updated.count !== 1) {
+      throw new ApplicationError('MEDIA_NOT_READY', 'Состояние изображения изменилось.', 409);
+    }
   }
 
   async queueDeletion(mediaId: string): Promise<void> {

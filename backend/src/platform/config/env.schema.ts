@@ -188,6 +188,13 @@ const workerSchema = commonSchema
     EMAIL_FROM: z.string().email().default('no-reply@komanda.mpei.ru'),
     PUBLIC_APP_URL: objectStorageUrlSchema.default('http://localhost:8080'),
     OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(1000),
+    MODERATION_PRIMARY_URL: objectStorageUrlSchema.default('http://local-moderator-primary'),
+    MODERATION_SECONDARY_URL: objectStorageUrlSchema.default('http://local-moderator-secondary'),
+    MODERATION_TIMEOUT_MS: z.coerce.number().int().min(100).max(30_000).default(3000),
+    MODERATION_WORKER_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(1000),
+    MODERATION_POLICY_VERSION: z.string().min(1).max(64).default('2026-08-17'),
+    MODERATION_CIRCUIT_FAILURES: z.coerce.number().int().min(1).max(20).default(3),
+    MODERATION_CIRCUIT_RESET_MS: z.coerce.number().int().min(1000).max(300_000).default(30_000),
   })
   .superRefine((value, context) => {
     if (value.NODE_ENV === 'production') {
@@ -203,6 +210,29 @@ const workerSchema = commonSchema
           code: 'custom',
           path: ['LEGAL_SUBJECT_HMAC_KEY'],
           message: 'production key required',
+        });
+      }
+      const primary = new URL(value.MODERATION_PRIMARY_URL);
+      const secondary = new URL(value.MODERATION_SECONDARY_URL);
+      if (primary.protocol !== 'https:') {
+        context.addIssue({
+          code: 'custom',
+          path: ['MODERATION_PRIMARY_URL'],
+          message: 'production moderation endpoint must use HTTPS',
+        });
+      }
+      if (secondary.protocol !== 'https:') {
+        context.addIssue({
+          code: 'custom',
+          path: ['MODERATION_SECONDARY_URL'],
+          message: 'production moderation endpoint must use HTTPS',
+        });
+      }
+      if (primary.origin === secondary.origin) {
+        context.addIssue({
+          code: 'custom',
+          path: ['MODERATION_SECONDARY_URL'],
+          message: 'production moderation endpoints must be independent',
         });
       }
     }

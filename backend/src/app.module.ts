@@ -6,6 +6,11 @@ import { DatabaseModule } from './platform/database/database.module';
 import { IdentityModule } from './modules/identity';
 import { FilesModule } from './modules/files';
 import { MetricsRuntime } from './platform/observability/metrics-runtime';
+import { CatalogModule } from './modules/catalog';
+import { ProfilesController } from './api/profiles.controller';
+import { ProfileWorkflowService } from './api/profile-workflow.service';
+import { NotificationsModule } from './modules/notifications';
+import { ProfilesModule } from './modules/profiles';
 
 @Module({})
 export class AppModule {
@@ -16,11 +21,18 @@ export class AppModule {
   ): DynamicModule {
     return {
       module: AppModule,
-      providers: metricsRuntime ? [{ provide: MetricsRuntime, useValue: metricsRuntime }] : [],
+      controllers: [ProfilesController],
+      providers: [
+        ...(metricsRuntime ? [{ provide: MetricsRuntime, useValue: metricsRuntime }] : []),
+        ProfileWorkflowService,
+      ],
       imports: [
         DatabaseModule.register(environment),
         IdentityModule.register(environment),
+        ProfilesModule,
         FilesModule.registerApi(environment),
+        CatalogModule,
+        NotificationsModule.register(environment),
         HealthModule.register(probe),
       ],
     };

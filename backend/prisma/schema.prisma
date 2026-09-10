@@ -5,7 +5,7 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
-  schemas  = ["identity", "platform", "profiles", "files"]
+  schemas  = ["identity", "platform", "profiles", "files", "catalog", "trust", "notifications"]
 }
 
 enum IdentityFormalRole {
@@ -166,6 +166,65 @@ enum MediaTombstoneState {
   @@schema("files")
 }
 
+enum CatalogVersionState {
+  draft
+  active
+  retired
+
+  @@map("catalog_version_state")
+  @@schema("catalog")
+}
+
+enum ModerationContentType {
+  profile_version
+  resume_version
+  team_version
+  opportunity_version
+  event_version
+  public_media
+
+  @@map("moderation_content_type")
+  @@schema("trust")
+}
+
+enum ModerationRequestState {
+  pending
+  in_progress
+  approved
+  rejected
+  failed
+
+  @@map("moderation_request_state")
+  @@schema("trust")
+}
+
+enum ModerationEndpoint {
+  primary
+  secondary
+
+  @@map("moderation_endpoint")
+  @@schema("trust")
+}
+
+enum ModerationOutcome {
+  approved
+  return_for_revision
+
+  @@map("moderation_outcome")
+  @@schema("trust")
+}
+
+enum EmailDeliveryState {
+  pending
+  sending
+  sent
+  failed
+  dead_letter
+
+  @@map("email_delivery_state")
+  @@schema("notifications")
+}
+
 model Account {
   id                     String             @id @db.Uuid
   emailNormalized        String             @unique(map: "accounts_email_normalized_key") @map("email_normalized") @db.VarChar(320)
@@ -261,7 +320,7 @@ model Profile {
   editLocked         Boolean            @default(false) @map("edit_locked")
   createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt          DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
-  rowVersion         BigInt             @default(0) @map("row_version")
+  rowVersion         BigInt             @default(1) @map("row_version")
   versions           ProfileVersion[]
   resumes            Resume[]
 
@@ -270,22 +329,26 @@ model Profile {
 }
 
 model ProfileVersion {
-  id             String             @id @db.Uuid
-  profileId      String             @map("profile_id") @db.Uuid
-  versionNo      Int                @map("version_no")
-  state          PublicVersionState @default(draft)
-  fullName       String             @map("full_name") @db.VarChar(200)
-  specialization String             @db.VarChar(200)
-  institute      String?            @db.VarChar(200)
-  course         Int?               @db.SmallInt
-  department     String?            @db.VarChar(200)
-  company        String?            @db.VarChar(200)
-  position       String?            @db.VarChar(200)
-  avatarMediaId  String?            @map("avatar_media_id") @db.Uuid
-  submittedAt    DateTime?          @map("submitted_at") @db.Timestamptz(6)
-  decidedAt      DateTime?          @map("decided_at") @db.Timestamptz(6)
-  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
-  profile        Profile            @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  id                       String             @id @db.Uuid
+  profileId                String             @map("profile_id") @db.Uuid
+  versionNo                Int                @map("version_no")
+  state                    PublicVersionState @default(draft)
+  fullName                 String             @map("full_name") @db.VarChar(200)
+  specialization           String             @db.VarChar(200)
+  institute                String?            @db.VarChar(200)
+  course                   Int?               @db.SmallInt
+  department               String?            @db.VarChar(200)
+  company                  String?            @db.VarChar(200)
+  position                 String?            @db.VarChar(200)
+  avatarMediaId            String?            @map("avatar_media_id") @db.Uuid
+  submittedAt              DateTime?          @map("submitted_at") @db.Timestamptz(6)
+  decidedAt                DateTime?          @map("decided_at") @db.Timestamptz(6)
+  moderationDecisionId     String?            @map("moderation_decision_id") @db.Uuid
+  moderationPolicyVersion  String?            @map("moderation_policy_version") @db.VarChar(64)
+  moderationViolationCodes String[]           @default([]) @map("moderation_violation_codes")
+  moderationReason         String?            @map("moderation_reason") @db.VarChar(2000)
+  createdAt                DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  profile                  Profile            @relation(fields: [profileId], references: [id], onDelete: Cascade)
 
   @@unique([profileId, versionNo], map: "profile_versions_profile_version_key")
   @@map("profile_versions")
@@ -303,12 +366,206 @@ model Resume {
   editLocked         Boolean          @default(false) @map("edit_locked")
   createdAt          DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt          DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
-  rowVersion         BigInt           @default(0) @map("row_version")
+  rowVersion         BigInt           @default(1) @map("row_version")
   profile            Profile          @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  versions           ResumeVersion[]
 
   @@unique([profileId, slot], map: "resumes_profile_slot_key")
   @@map("resumes")
   @@schema("profiles")
+}
+
+model ResumeVersion {
+  id                       String             @id @db.Uuid
+  resumeId                 String             @map("resume_id") @db.Uuid
+  versionNo                Int                @map("version_no")
+  state                    PublicVersionState @default(draft)
+  about                    String             @db.VarChar(1024)
+  imageMediaId             String?            @map("image_media_id") @db.Uuid
+  submittedAt              DateTime?          @map("submitted_at") @db.Timestamptz(6)
+  decidedAt                DateTime?          @map("decided_at") @db.Timestamptz(6)
+  moderationDecisionId     String?            @map("moderation_decision_id") @db.Uuid
+  moderationPolicyVersion  String?            @map("moderation_policy_version") @db.VarChar(64)
+  moderationViolationCodes String[]           @default([]) @map("moderation_violation_codes")
+  moderationReason         String?            @map("moderation_reason") @db.VarChar(2000)
+  createdAt                DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  resume                   Resume             @relation(fields: [resumeId], references: [id], onDelete: Cascade)
+  projects                 ResumeProject[]
+  tags                     ResumeVersionTag[]
+
+  @@unique([resumeId, versionNo], map: "resume_versions_resume_version_key")
+  @@map("resume_versions")
+  @@schema("profiles")
+}
+
+model ResumeProject {
+  resumeVersionId String        @map("resume_version_id") @db.Uuid
+  position        Int           @db.SmallInt
+  title           String        @db.VarChar(200)
+  description     String        @db.VarChar(2000)
+  url             String?       @db.VarChar(2048)
+  resumeVersion   ResumeVersion @relation(fields: [resumeVersionId], references: [id], onDelete: Cascade)
+
+  @@id([resumeVersionId, position])
+  @@map("resume_projects")
+  @@schema("profiles")
+}
+
+model ResumeVersionTag {
+  resumeVersionId String        @map("resume_version_id") @db.Uuid
+  tagId           String        @map("tag_id") @db.Uuid
+  resumeVersion   ResumeVersion @relation(fields: [resumeVersionId], references: [id], onDelete: Cascade)
+
+  @@id([resumeVersionId, tagId])
+  @@map("resume_version_tags")
+  @@schema("profiles")
+}
+
+model ProfilesInboxEvent {
+  eventId      String   @id @map("event_id") @db.Uuid
+  consumer     String   @db.VarChar(100)
+  eventVersion Int      @map("event_version") @db.SmallInt
+  processedAt  DateTime @map("processed_at") @db.Timestamptz(6)
+  resultRefId  String?  @map("result_ref_id") @db.Uuid
+
+  @@index([processedAt, eventId], map: "profiles_inbox_processed_idx")
+  @@map("inbox_events")
+  @@schema("profiles")
+}
+
+model CatalogVersion {
+  id          String              @id @db.Uuid
+  version     String              @unique @db.VarChar(32)
+  state       CatalogVersionState
+  publishedAt DateTime?           @map("published_at") @db.Timestamptz(6)
+  createdAt   DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  tags        CatalogTag[]
+
+  @@map("versions")
+  @@schema("catalog")
+}
+
+model CatalogTag {
+  id               String         @id @db.Uuid
+  catalogVersionId String         @map("catalog_version_id") @db.Uuid
+  code             String         @db.VarChar(80)
+  name             String         @db.VarChar(120)
+  category         String         @db.VarChar(120)
+  sortOrder        Int            @map("sort_order") @db.SmallInt
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  catalogVersion   CatalogVersion @relation(fields: [catalogVersionId], references: [id], onDelete: Restrict)
+
+  @@unique([catalogVersionId, code], map: "tags_version_code_key")
+  @@unique([catalogVersionId, sortOrder], map: "tags_version_sort_order_key")
+  @@map("tags")
+  @@schema("catalog")
+}
+
+model ModerationRequest {
+  id                 String                 @id @db.Uuid
+  contentType        ModerationContentType  @map("content_type")
+  contentVersionId   String                 @map("content_version_id") @db.Uuid
+  ownerAccountId     String                 @map("owner_account_id") @db.Uuid
+  policyVersion      String                 @map("policy_version") @db.VarChar(64)
+  state              ModerationRequestState @default(pending)
+  generation         Int                    @default(1)
+  activeEndpoint     ModerationEndpoint     @default(primary) @map("active_endpoint")
+  providerRequestKey String                 @unique @map("provider_request_key") @db.VarChar(200)
+  pendingSince       DateTime               @map("pending_since") @db.Timestamptz(6)
+  leaseUntil         DateTime?              @map("lease_until") @db.Timestamptz(6)
+  decidedAt          DateTime?              @map("decided_at") @db.Timestamptz(6)
+  violationCodes     String[]               @default([]) @map("violation_codes")
+  failureCode        String?                @map("failure_code") @db.VarChar(100)
+  createdAt          DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+  rowVersion         BigInt                 @default(0) @map("row_version")
+
+  @@unique([contentType, contentVersionId, policyVersion], map: "moderation_request_content_key")
+  @@index([state, pendingSince, id], map: "moderation_requests_pending_idx")
+  @@map("moderation_requests")
+  @@schema("trust")
+}
+
+model ModerationDecision {
+  id               String            @id @db.Uuid
+  sourceId         String            @unique @map("source_id") @db.Uuid
+  contentType      String            @map("content_type") @db.VarChar(32)
+  contentId        String            @map("content_id") @db.Uuid
+  contentVersionId String            @map("content_version_id") @db.Uuid
+  outcome          ModerationOutcome
+  policyVersion    String            @map("policy_version") @db.VarChar(64)
+  violationCodes   String[]          @default([]) @map("violation_codes")
+  reason           String?           @db.VarChar(2000)
+  decidedAt        DateTime          @map("decided_at") @db.Timestamptz(6)
+
+  @@index([contentType, contentId, decidedAt(sort: Desc), id], map: "moderation_decisions_content_idx")
+  @@map("moderation_decisions")
+  @@schema("trust")
+}
+
+model TrustInboxEvent {
+  eventId      String   @id @map("event_id") @db.Uuid
+  consumer     String   @db.VarChar(100)
+  eventVersion Int      @map("event_version") @db.SmallInt
+  processedAt  DateTime @map("processed_at") @db.Timestamptz(6)
+  resultRefId  String?  @map("result_ref_id") @db.Uuid
+
+  @@index([processedAt, eventId], map: "trust_inbox_processed_idx")
+  @@map("inbox_events")
+  @@schema("trust")
+}
+
+model Notification {
+  id                 String    @id @db.Uuid
+  recipientAccountId String    @map("recipient_account_id") @db.Uuid
+  sourceEventId      String    @map("source_event_id") @db.Uuid
+  type               String    @db.VarChar(80)
+  resourceType       String?   @map("resource_type") @db.VarChar(64)
+  resourceId         String?   @map("resource_id") @db.Uuid
+  payload            Json
+  readAt             DateTime? @map("read_at") @db.Timestamptz(6)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  rowVersion         BigInt    @default(1) @map("row_version")
+
+  @@unique([sourceEventId, recipientAccountId, type], map: "notifications_event_recipient_type_key")
+  @@index([recipientAccountId, createdAt(sort: Desc), id(sort: Desc)], map: "notifications_recipient_created_idx")
+  @@index([recipientAccountId, createdAt(sort: Desc), id(sort: Desc)], map: "notifications_recipient_unread_idx")
+  @@map("notifications")
+  @@schema("notifications")
+}
+
+model EmailDelivery {
+  id                 String             @id @db.Uuid
+  sourceEventId      String             @map("source_event_id") @db.Uuid
+  recipientAccountId String             @map("recipient_account_id") @db.Uuid
+  templateCode       String             @map("template_code") @db.VarChar(80)
+  providerMessageKey String             @unique @map("provider_message_key") @db.VarChar(200)
+  state              EmailDeliveryState @default(pending)
+  attemptCount       Int                @default(0) @map("attempt_count")
+  availableAt        DateTime           @map("available_at") @db.Timestamptz(6)
+  leaseUntil         DateTime?          @map("lease_until") @db.Timestamptz(6)
+  sentAt             DateTime?          @map("sent_at") @db.Timestamptz(6)
+  lastErrorCode      String?            @map("last_error_code") @db.VarChar(100)
+  createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  rowVersion         BigInt             @default(0) @map("row_version")
+
+  @@unique([sourceEventId, recipientAccountId, templateCode], map: "email_deliveries_event_recipient_template_key")
+  @@index([availableAt, id], map: "email_deliveries_due_idx")
+  @@map("email_deliveries")
+  @@schema("notifications")
+}
+
+model NotificationsInboxEvent {
+  eventId      String   @id @map("event_id") @db.Uuid
+  consumer     String   @db.VarChar(100)
+  eventVersion Int      @map("event_version") @db.SmallInt
+  processedAt  DateTime @map("processed_at") @db.Timestamptz(6)
+  resultRefId  String?  @map("result_ref_id") @db.Uuid
+
+  @@index([processedAt, eventId], map: "notifications_inbox_processed_idx")
+  @@map("inbox_events")
+  @@schema("notifications")
 }
 
 model IdempotencyRecord {

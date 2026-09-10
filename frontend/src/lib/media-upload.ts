@@ -38,7 +38,7 @@ export function loadPendingMediaUpload(
 }
 
 export function isMediaReady(state: string): boolean {
-  return state === 'ready' || state === 'approved';
+  return state === 'ready' || state === 'moderation_pending' || state === 'approved';
 }
 
 export function mediaUploadError(code: string | undefined): string {

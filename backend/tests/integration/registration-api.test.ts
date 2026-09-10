@@ -96,7 +96,6 @@ beforeEach(async () => {
   await prisma.outboxEvent.deleteMany();
   await prisma.idempotencyRecord.deleteMany();
   await prisma.resume.deleteMany();
-  await prisma.profileVersion.deleteMany();
   await prisma.profile.deleteMany();
   await prisma.account.deleteMany();
 });

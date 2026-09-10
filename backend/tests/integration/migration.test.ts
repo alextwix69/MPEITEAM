@@ -62,7 +62,7 @@ describe('platform foundation migration', () => {
     ).toEqual([...domainSchemas].sort());
   });
 
-  it('creates only the business tables required by registration', async () => {
+  it('creates the implemented identity, files and profile-moderation tables', async () => {
     const tables = await prisma.$queryRaw<Array<{ table_schema: string; table_name: string }>>`
       SELECT table_schema, table_name FROM information_schema.tables
     `;
@@ -78,18 +78,46 @@ describe('platform foundation migration', () => {
         'identity.consent_statuses',
         'identity.credentials',
         'identity.sessions',
+        'catalog.tags',
+        'catalog.versions',
+        'notifications.email_deliveries',
+        'notifications.inbox_events',
+        'notifications.notifications',
         'platform.idempotency_records',
         'platform.outbox_deliveries',
         'platform.outbox_events',
         'profiles.profile_versions',
         'profiles.profiles',
+        'profiles.inbox_events',
+        'profiles.resume_projects',
+        'profiles.resume_version_tags',
+        'profiles.resume_versions',
         'profiles.resumes',
+        'trust.inbox_events',
+        'trust.moderation_decisions',
+        'trust.moderation_requests',
         'files.media_bindings',
         'files.media_deletion_tombstones',
         'files.media_objects',
         'files.upload_sessions',
       ].sort(),
     );
+  });
+
+  it('seeds exactly one immutable active catalog with 180 ordered tags', async () => {
+    const versions = await prisma.catalogVersion.findMany({ include: { tags: true } });
+    expect(versions).toHaveLength(1);
+    expect(versions[0]?.state).toBe('active');
+    expect(versions[0]?.tags).toHaveLength(180);
+    expect(versions[0]?.tags.map(({ sortOrder }) => sortOrder).sort((a, b) => a - b)).toEqual(
+      Array.from({ length: 180 }, (_, index) => index),
+    );
+    await expect(
+      prisma.catalogTag.update({
+        where: { id: versions[0]!.tags[0]!.id },
+        data: { name: 'changed' },
+      }),
+    ).rejects.toThrow();
   });
 
   it('enforces files ownership, state invariants and optimistic versions in PostgreSQL', async () => {

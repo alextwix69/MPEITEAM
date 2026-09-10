@@ -75,6 +75,15 @@ export interface DownloadUrlView {
   expiresAt: string;
 }
 
+export interface PublicMediaBindingInput {
+  accountId: string;
+  mediaId: string;
+  ownerType: 'profile' | 'resume';
+  ownerId: string;
+  versionType: 'profile_version' | 'resume_version';
+  versionId: string;
+}
+
 export interface SanitizedImage {
   body: Buffer;
   mime: 'image/jpeg';

@@ -7,6 +7,7 @@ import { IDENTITY_ENVIRONMENT } from './identity.tokens';
 import { RateLimitService } from './infrastructure/rate-limit.service';
 import { APP_GUARD } from '@nestjs/core';
 import { SessionGuard } from './http/session.guard';
+import { AccountContactService } from './application/account-contact.service';
 
 @Module({})
 export class IdentityModule {
@@ -22,6 +23,14 @@ export class IdentityModule {
         { provide: IDENTITY_ENVIRONMENT, useValue: environment },
       ],
       exports: [IdentityService],
+    };
+  }
+
+  static registerWorker(): DynamicModule {
+    return {
+      module: IdentityModule,
+      providers: [AccountContactService],
+      exports: [AccountContactService],
     };
   }
 }

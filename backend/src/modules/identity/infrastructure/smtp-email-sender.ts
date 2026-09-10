@@ -3,6 +3,7 @@ import type {
   EmailSender,
   VerificationEmail,
   PasswordResetEmail,
+  ModerationResultEmail,
 } from '../application/email-sender.port';
 
 export class SmtpEmailSender implements EmailSender {
@@ -35,6 +36,22 @@ export class SmtpEmailSender implements EmailSender {
       to: message.recipient,
       subject: 'Восстановление доступа — Команда.МЭИ',
       text: `Установите новый пароль: ${message.resetUrl}\nЕсли вы не запрашивали восстановление, проигнорируйте письмо.`,
+      messageId: `<${message.eventId}@komanda.mpei>`,
+    });
+  }
+
+  async sendModerationResultEmail(message: ModerationResultEmail): Promise<void> {
+    const subject = message.approved
+      ? 'Материал одобрен — Команда.МЭИ'
+      : 'Материал нужно доработать — Команда.МЭИ';
+    const details = message.approved
+      ? 'Проверка завершена: материал опубликован.'
+      : `Проверка завершена: исправьте материал и отправьте его повторно.\nКоды: ${message.violationCodes.join(', ')}${message.reason ? `\n${message.reason}` : ''}`;
+    await this.#mailer.sendMail({
+      from: this.sender,
+      to: message.recipient,
+      subject,
+      text: `${details}\n${message.contentUrl}`,
       messageId: `<${message.eventId}@komanda.mpei>`,
     });
   }

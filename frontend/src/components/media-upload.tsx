@@ -21,7 +21,7 @@ export interface MediaUploadProps {
   contentScope: ContentScope;
   ownerType: UploadOwnerType;
   ownerId: string;
-  onReady?: (mediaId: string, downloadUrl: string) => void;
+  onReady?: (mediaId: string, downloadUrl?: string) => void;
 }
 
 const POLL_ATTEMPTS = 20;
@@ -83,6 +83,13 @@ export function MediaUpload({ contentScope, ownerType, ownerId, onReady }: Media
           setMessage(mediaUploadError('MEDIA_NOT_READY'));
           return;
         }
+        if (contentScope === 'public_content') {
+          sessionStorage.removeItem(storageKey);
+          setPending(undefined);
+          setMessage('Изображение загружено и будет опубликовано только после проверки.');
+          onReady?.(mediaId);
+          return;
+        }
         const download = await apiClient.GET('/media/{mediaId}/download-url', {
           params: { path: { mediaId } },
           cache: 'no-store',
@@ -101,7 +108,7 @@ export function MediaUpload({ contentScope, ownerType, ownerId, onReady }: Media
         setBusy(false);
       }
     },
-    [onReady, session, storageKey],
+    [contentScope, onReady, session, storageKey],
   );
 
   useEffect(() => {

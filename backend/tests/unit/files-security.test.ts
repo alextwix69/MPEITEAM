@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { FilesService } from '../../src/modules/files/application/files.service';
+import type { ObjectStorage } from '../../src/modules/files/application/object-storage.port';
+import type { ProfilesService } from '../../src/modules/profiles';
+import type { DatabaseService } from '../../src/platform/database/database.service';
 import { parseClamAvResponse } from '../../src/modules/files/infrastructure/malware-scanner.adapter';
 import { S3StorageAdapter } from '../../src/modules/files/infrastructure/s3-storage.adapter';
 import { assertStoredUploadMatches } from '../../src/modules/files/worker/files-worker.service';
@@ -63,5 +67,39 @@ describe('files security regressions', () => {
         'same',
       ),
     ).not.toThrow();
+  });
+
+  it('issues a short-lived URL to another active caller only for published public media', async () => {
+    const mediaId = crypto.randomUUID();
+    const database = {
+      mediaObject: {
+        findUnique: vi.fn(async () => ({
+          id: mediaId,
+          uploaderAccountId: crypto.randomUUID(),
+          contentScope: 'public_content',
+          state: 'approved',
+          objectKey: 'media/published.jpg',
+        })),
+      },
+    } as unknown as DatabaseService;
+    const profiles = {
+      isPublishedMedia: vi.fn(async () => true),
+    } as unknown as ProfilesService;
+    const storage = {
+      head: vi.fn(async () => ({ contentLength: 10, contentType: 'image/jpeg', eTag: 'etag' })),
+      createDownloadUrl: vi.fn(async () => 'https://media.example.test/signed'),
+    } as unknown as ObjectStorage;
+    const service = new FilesService(database, profiles, storage, undefined, {
+      ...storageEnvironment,
+      FILES_DOWNLOAD_TTL_SECONDS: 300,
+    } as FilesEnvironment);
+    const result = await service.createDownloadUrl(crypto.randomUUID(), mediaId);
+    expect(result.url).toBe('https://media.example.test/signed');
+    expect(profiles.isPublishedMedia).toHaveBeenCalledWith(mediaId);
+
+    vi.mocked(profiles.isPublishedMedia).mockResolvedValue(false);
+    await expect(service.createDownloadUrl(crypto.randomUUID(), mediaId)).rejects.toMatchObject({
+      code: 'MEDIA_NO_LONGER_STORED',
+    });
   });
 });

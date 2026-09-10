@@ -136,7 +136,6 @@ describe('files upload API', () => {
     await prisma.outboxEvent.deleteMany();
     await prisma.idempotencyRecord.deleteMany();
     await prisma.resume.deleteMany();
-    await prisma.profileVersion.deleteMany();
     await prisma.profile.deleteMany();
     await prisma.session.deleteMany();
     await prisma.authToken.deleteMany();

@@ -1,0 +1,2 @@
+export const CONTENT_MODERATOR = Symbol('CONTENT_MODERATOR');
+export const TRUST_ENVIRONMENT = Symbol('TRUST_ENVIRONMENT');

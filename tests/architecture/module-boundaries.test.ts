@@ -76,7 +76,10 @@ describe('bounded-context module boundaries', () => {
             !path.includes('/identity/') &&
             !path.includes('/profiles/') &&
             !path.includes('/files/') &&
-            !path.includes('/compliance/'),
+            !path.includes('/compliance/') &&
+            !path.includes('/catalog/') &&
+            !path.includes('/notifications/') &&
+            !path.includes('/trust/'),
         )
         .every(({ source }) => source.trim() === 'export {};'),
     ).toBe(true);
